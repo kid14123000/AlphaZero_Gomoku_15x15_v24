@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>五子棋 AlphaZero 驾驶舱</title>
+<script src="/static/chart.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;padding:16px}
+h1{font-size:1.3rem;margin-bottom:12px;color:#38bdf8;display:flex;align-items:center;gap:10px}
+h1 small{font-size:.75rem;color:#64748b;font-weight:400}
+.row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.card{background:#1e293b;border-radius:10px;padding:14px;flex:1;min-width:200px}
+.card-title{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;font-weight:600}
+.status-main{flex:1;min-width:240px;background:linear-gradient(135deg,#1e293b 0%,#1a2b45 100%);border:1px solid #2b3a55}
+.worker-panel{flex:2;min-width:380px}
+.chart-panel{flex:2;min-width:400px}
+.info-panel{flex:1;min-width:180px}
+.log-panel{width:100%}
+.big{font-size:2rem;font-weight:700;margin-bottom:2px;color:#e2e8f0}
+.big-unit{font-size:.85rem;color:#64748b;font-weight:400;margin-left:2px}
+.progress-track{background:#0f172a;border-radius:8px;height:12px;overflow:hidden;margin:10px 0 8px;border:1px solid #24324a}
+.progress-fill{height:100%;background:linear-gradient(90deg,#38bdf8,#4ade80);border-radius:8px;transition:width .6s ease;box-shadow:0 0 8px rgba(56,189,248,.4)}
+.phase{font-size:.75rem;padding:2px 10px;border-radius:20px;display:inline-block;font-weight:500}
+.phase-selfplay{background:#1e40af;color:#60a5fa}
+.phase-waiting_workers{background:#92400e;color:#fbbf24}
+.phase-learning_done{background:#14532d;color:#4ade80}
+.phase-saved{background:#14532d;color:#4ade80}
+.phase-checkpoint{background:#14532d;color:#4ade80}
+.phase-demo{background:#3b0764;color:#a78bfa}
+.phase-idle{background:#1e293b;color:#94a3b8}
+.phase-startup{background:#3b0764;color:#a78bfa}
+.wgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}
+.wi{padding:5px 6px;border-radius:6px;font-size:.75rem;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.w-running{background:#1e3a5f;color:#93c5fd;border-left:3px solid #3b82f6}
+.w-done{background:#14532d;color:#4ade80;border-left:3px solid #22c55e}
+.w-waiting{background:#1e293b;color:#94a3b8;border-left:3px solid #475569}
+.w-stale{background:#3f2d10;color:#fbbf24;border-left:3px solid #f59e0b}
+.wi-main{background:linear-gradient(135deg,#3e2818,#4a3220);color:#dcb35c;border-left:3px solid #dcb35c;font-weight:700;font-size:.78rem}
+.log-box{background:#0f172a;border-radius:6px;padding:8px 10px;font-family:'SF Mono','Cascadia Code',monospace;font-size:.72rem;line-height:1.7;height:260px;overflow-y:auto;color:#94a3b8}
+.log-box .hl{color:#e2e8f0}
+.ck-list{font-size:.78rem;max-height:150px;overflow-y:auto}
+.ck-list li{list-style:none;padding:2px 0;color:#94a3b8;display:flex;justify-content:space-between}
+.ck-list li span{color:#475569}
+.sub{font-size:.75rem;color:#64748b;margin-top:4px}
+#lastUpd{font-size:.7rem;color:#475569;margin-top:6px}
+.warn{color:#fbbf24;font-size:.75rem;margin-top:4px}
+
+/* ── 导航栏 ── */
+nav { display: flex; gap: 8px; padding: 0 0 14px; flex-wrap: wrap; }
+nav a { color: #7dd3fc; text-decoration: none; font-size: 13px; padding: 6px 14px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+nav a:hover { background: #1e293b; }
+nav a.active { background: #1e293b; border-color: #7dd3fc; color: #e2e8f0; }
+nav a i { margin-right: 5px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard" class="active"><i>📊</i> 训练监控</a>
+  <a href="/network"><i>🧠</i> 网络前向</a>
+  <a href="/mcts"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution"><i>🧬</i> 开局演化</a>
+  <a href="/replay"><i>🗂</i> 自对弈数据</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+<style>
+nav + h1 { margin-top: 16px; }
+</style>
+<h1>⚫ 五子棋训练 <span id="itLabel"></span><small id="verLabel">驾驶舱 · 手动刷新 (防SSH限流)</small></h1>
+<button onclick="refreshAll()" style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:6px 18px;font-size:13px;cursor:pointer;margin-bottom:12px">🔄 手动刷新</button>
+<!-- ★ 一键切换监控槽 (2026-09-29 用户要): 只改 web 看哪个槽 + 自动重载;
+     服务器换轮/血统核验仍走 scripts/round_switch/switch_round.sh ✗ -->
+<button id="slotBtn" onclick="switchSlot()" title="只切 web 监控的槽(自动重载); 服务器换轮用 round_switch.sh" style="background:#0f766e;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;margin-bottom:12px;margin-left:6px">⇄ 切到 v38</button>
+<script>
+function switchSlot() {
+  const other = (window._trainVer === 'v38') ? 'v39' : 'v38';
+  if (!confirm('把本地 web 监控切到 ' + other + ' 槽？\n\n· 只改 web 看哪个槽 + 自动重载(约 2-3 秒)\n· 服务器换轮/血统核验不在这里 → scripts/round_switch/switch_round.sh')) return;
+  fetch('/api/slot/switch', {method:'POST', headers:{'Content-Type':'application/json'},
+                             body: JSON.stringify({slot: other})})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { alert('切换失败: ' + (d.error || '')); return; }
+      const el = document.getElementById('verLabel');
+      if (el) el.innerHTML = '⏳ 正在切到 ' + other + ' 并重载…';
+      setTimeout(() => location.reload(), 4000);
+    }).catch(() => { setTimeout(() => location.reload(), 3000); });
+}
+</script>
+
+<div class="row">
+  <div class="card status-main">
+    <div class="card-title">本代进度 <span id="itLabel2" style="color:#38bdf8"></span></div>
+    <div class="big"><span id="overallNum">—</span><span class="big-unit" id="overallDenom">/ 100 局</span></div>
+    <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+    <div id="mainPhase" style="margin-bottom:6px"></div>
+    <div class="sub" id="iterTime" style="line-height:1.6"></div>
+    <div class="sub">MCTS: <span id="simCount">—</span> 模拟 · <span id="workerStats"></span></div>
+    <div class="sub">黑白(工兵日志窗口): <span id="bwStat" style="color:#e2e8f0">—</span></div>
+    <div class="sub">🩺 体检: <span id="healthStat" style="color:#e2e8f0">—</span></div>
+    <div id="lastUpd"></div>
+  </div>
+  <div class="card worker-panel">
+    <div class="card-title">对局单元 <span id="unitSub" style="color:#64748b;font-weight:400">—</span></div>
+    <div class="wgrid" id="wGrid"></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="card" style="flex:1.15;border:1px solid #166534">
+    <div class="card-title">🎓 教练学习 <span id="coachSub" style="color:#4ade80;font-weight:400">冻结教练 vs 可训练学生 · 主指标=对固定教练的胜率</span></div>
+    <div class="big"><span id="kpiRate">—</span><span class="big-unit" id="kpiUnit">/ 目标 —</span></div>
+    <div class="progress-track"><div class="progress-fill" id="kpiFill" style="width:0%;background:#4ade80"></div></div>
+    <div class="sub" id="kpiBox" style="line-height:1.7">—</div>
+  </div>
+  <div class="card" style="flex:1;border:1px solid #7c2d12">
+    <div class="card-title">🔥 空盘value 熔断器 <span id="spiralSub" style="color:#fb923c;font-weight:400">连3代上升且&gt;0.25 → 回滚到&lt;0.15</span></div>
+    <div class="sub" id="spiralBox" style="line-height:1.8">—</div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="card" style="flex:1">
+    <div class="card-title">🚀 攒批推理服务 <span style="color:#64748b;font-weight:400">infer_server · 独立进程独占 GPU，跨工兵汇聚 MCTS leaf 请求攒批 forward</span></div>
+    <div class="sub" id="inferBox" style="line-height:1.8">—</div>
+  </div>
+  <div class="card" style="flex:1">
+    <div class="card-title">⏱ 每代耗时 <span style="color:#64748b;font-weight:400">检查点间隔 · 攒批推理提速对照</span></div>
+    <div class="sub" id="durBox" style="line-height:1.8">—</div>
+  </div>
+  <div class="card" style="flex:1;border:1px solid #4c1d95">
+    <div class="card-title">🏛 权重门控 <span id="gateSub" style="color:#a78bfa;font-weight:400">候选 vs best 配对赛 · 胜率达标才晋升</span></div>
+    <div class="sub" id="gateBox" style="line-height:1.8">—</div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="card chart-panel" style="flex:1">
+    <div class="card-title">Loss 曲线 <span style="color:#64748b;font-weight:400">(policy / total / policy移动平均)</span>
+      <select id="maWin" onchange="load()" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:2px 6px;font-size:11px;margin-left:6px">
+        <option value="3">MA3</option>
+        <option value="5" selected>MA5</option>
+        <option value="10">MA10</option>
+        <option value="20">MA20</option>
+      </select>
+      <span id="cmpLabel" style="color:#fb923c;font-weight:400">对比: —</span>
+    </div>
+    <canvas id="lossChart" height="140"></canvas>
+  </div>
+  <div class="card chart-panel" style="flex:1">
+    <div class="card-title">Value Loss <span style="color:#64748b;font-weight:400">(独立坐标)</span></div>
+    <canvas id="valueChart" height="140"></canvas>
+  </div>
+</div>
+
+<div class="row">
+  <div class="card chart-panel" style="flex:2">
+    <div class="card-title">网络部件权重趋势 <span style="color:#64748b;font-weight:400">(相邻代移动距离, 按选择顺序)</span></div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+      <select id="wtVer" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px 8px;font-size:12px;max-width:90px"></select>
+      <select id="wtSelect" multiple size="4" style="flex:1;min-width:200px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px"></select>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <button onclick="addWt()" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer">＋ 加入序列</button>
+        <button onclick="clearWt()" style="background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer">清空</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;align-items:stretch">
+        <button onclick="syncNow()" style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer" id="syncBtn">🔄 立即同步权重</button>
+        <span id="syncState" style="font-size:10px;color:#94a3b8;max-width:160px">每20分钟自动同步</span>
+      </div>
+      <div style="flex:1;min-width:180px;max-height:80px;overflow-y:auto;background:#0f172a;border:1px solid #334155;border-radius:6px;padding:4px 8px;font-size:11px;color:#94a3b8" id="wtSeq">未选择权重</div>
+      <button onclick="viewTrend()" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;cursor:pointer">查看趋势</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <div style="flex:1;min-width:220px">
+        <div style="font-size:10px;color:#38bdf8;margin-bottom:2px">共享主干 · 移动距离</div>
+        <canvas id="netTrendMain" height="110"></canvas>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <div style="font-size:10px;color:#f472b6;margin-bottom:2px">Policy 头 · 移动距离</div>
+        <canvas id="netTrendPolicy" height="110"></canvas>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <div style="font-size:10px;color:#4ade80;margin-bottom:2px">Value 头 · 移动距离</div>
+        <canvas id="netTrendValue" height="110"></canvas>
+      </div>
+    </div>
+    <div id="netTrendStatus" style="font-size:11px;color:#64748b;margin-top:4px"></div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="card log-panel" style="flex:2">
+    <div class="card-title">最新日志</div>
+    <div class="log-box" id="logBox"></div>
+  </div>
+  <div class="card info-panel" style="flex:1">
+    <div class="card-title">检查点</div>
+    <ul class="ck-list" id="ckList"></ul>
+    <div class="card-title" style="margin-top:8px">经验存档</div>
+    <ul class="ck-list" id="expList" style="max-height:100px"></ul>
+  </div>
+</div>
+
+<script>
+let chart = null;
+let chartV = null;
+
+function mkChart(ctx, datasets){
+  return new Chart(ctx,{
+    type:'line',
+    data:{labels:[],datasets},
+    options:{
+      responsive:true,animation:false,
+      plugins:{legend:{labels:{color:'#94a3b8',boxWidth:12,font:{size:10}}}},
+      scales:{
+        x:{type:'linear',min:0,ticks:{color:'#64748b',font:{size:9},stepSize:1},grid:{color:'#1e293b'}},
+        y:{ticks:{color:'#64748b',font:{size:9}},grid:{color:'#1e293b'}}
+      }
+    }
+  });
+}
+// 按真实 iteration 对齐两组不同长度曲线: {x:it, y:val} (2026-09-02: x轴改linear,
+// 否则 category 轴按主曲线 labels 截断 v26 对比线 36点→只显11点, 且 v27(v26复制改value)早期loss重合更难分)
+
+function cls(game, quota){
+  // 2026-09-13: 判定按「每工兵配额」(目标局数/工兵数)，不再写死 10 局
+  if(game===null||game===undefined) return 'w-waiting';
+  if(game>=quota) return 'w-done';
+  if(game>0) return 'w-running';
+  return 'w-waiting';
+}
+
+function ph(p){
+  return 'phase phase-'+p;
+}
+const PHASE_TEXT = {selfplay:'🎮 工兵产局中',waiting_workers:'⏳ 等工兵产局',learning_done:'✅ 学习完成',learning:'🧮 汇总/学习中',saved:'💾 已存档',checkpoint:'📦 检查点',gating:'🏛 门控赛中',demo:'🎮 演示中',idle:'就绪',startup:'启动中'};
+
+function update(d){
+  // 主线/对比线版本 —— 必须最先取好 (后面 label 全依赖它; 放函数后半段会踩 TDZ: 前面引用即抛错)
+  const TV=d.train_version||'v38', CV=d.compare_version||'v37';
+  window._trainVer=TV;
+  // ★ 一键切换按钮的标签 = 显示"要切过去的那个槽" (2026-09-29)
+  (function(){ const b=document.getElementById('slotBtn');
+    if (b) { if (TV==='v38'||TV==='v39') b.textContent='⇄ 切到 ' + (TV==='v38' ? 'v39' : 'v38');
+             else b.style.display='none'; } })();
+  // ── 本代进度（2026-09-13 攒批推理优化版口径）──
+  // 主进程 train_episodes_per_iteration=0 只做调度+训练，本代 100 局全部由 20 个工兵产；
+  // 主日志「等待工兵: N/100局已到」就是真实进度，不再有「主进程 100 局」那一半
+  const ws=d.workers||[];
+  const target=Math.max(d.current_denom||100,1);        // 本代目标局数 = worker_count × games_per_worker
+  const mainGames=d.main_episodes_per_iter||0;          // 优化版 = 0
+  const got=Math.min(d.current_game!=null?d.current_game:0,target);
+  // ★ 2026-11-15: 后端在"主进程也产局"的版本(v24/v24b)里已把主进程局数并入 current_denom
+  //   → denom_includes_main 时不能再加一次（否则 100 局显示成 110）
+  const TOTAL_GAMES = d.denom_includes_main ? target : target+mainGames;
+  const pct=Math.min(100,Math.round(got/Math.max(TOTAL_GAMES,1)*100));
+  document.getElementById('overallNum').textContent=got;
+  document.getElementById('overallDenom').textContent='/ '+TOTAL_GAMES+' 局';
+  document.getElementById('progressFill').style.width=pct+'%';
+  document.getElementById('itLabel2').textContent=d.current_it?`代 ${d.current_it}`:'';
+
+  // 主进程阶段徽章
+  document.getElementById('mainPhase').innerHTML=`<span class="${ph(d.main_phase)}">${
+    PHASE_TEXT[d.main_phase]||d.main_phase
+  }</span>`;
+  document.getElementById('simCount').textContent=d.sim_count||'—';
+  document.getElementById('itLabel').textContent=d.current_it?`代${d.current_it}`:'';
+  const _vl=document.getElementById('verLabel');
+  if(_vl){
+    // ★ 配置(active_slot.json) 与服务器【实跑】槽不一致 → 在原行尾挂 ⚠（不新增卡片行）
+    //   防"看错槽 / 整轮用错网络"这类地雷 (2026-09-27)
+    const _mm = d.slot_mismatch
+      ? ` ⚠ 服务器实际在跑 ${d.slot_running}（本 web 配置 ${d.slot_config}）→ 修: python3 gomoku_web/set_slot.py ${d.slot_running}`
+      : '';
+    _vl.innerHTML=`${TV} 驾驶舱 · 手动刷新 (防SSH限流)`+
+      (_mm?`<span style="color:#f87171;font-weight:600">${_mm}</span>`:'');
+  }
+
+  // 本代黑白拆解（优化版主进程不再打印对局行 → 从工兵日志聚合）
+  const bw=d.bw_current||{};
+  const bwT=(bw.black||0)+(bw.white||0);
+  const _sn=(d.kpi||{}).student_name||'白';            // 学生执色 (v38 第二轮=白, v39=黑)
+  document.getElementById('bwStat').textContent = bwT
+    ? `黑 ${bw.black} : 白 ${bw.white}（在产代共 ${bwT} 局 · 学生(${_sn})胜率 `
+      + `${Math.round(((_sn==='白'?bw.white:bw.black)||0)/bwT*100)}%）`
+    : '—（工兵日志窗口内无对局记录）';
+
+  const unitSub=document.getElementById('unitSub');
+  const wc=d.worker_count||ws.length||0;
+  // ★ 2026-10-11 用户: "工兵数量和每工兵目标看看修改下"
+  //   工兵数: 用后端 worker_cells = max(配置值, 实际拉到的工兵段) —— v42 配置 10 但实跑 20+ ✗
+  //   每工兵目标: 用 metadata.worker_games_per_worker 真值 (v42=11), 不再用均摊估算 ✗
+  unitSub.textContent=`主进程(调度+训练, 本代 ${mainGames} 局) + ${d.worker_cells||wc} 工兵`
+    + ` · 每工兵目标 ${d.worker_games_per_worker||'?'} 局 (每代 ${target} 局)`;
+
+  const exp=document.getElementById('lastUpd');
+  exp.textContent=`${d.time||''} · ${d.checkpoints?.length||0}个权重 · ${d.experiences?.length||0}代经验`
+    + (d.collected_games?` · 本代收齐 ${d.collected_games} 局`:'')
+    + (d.workers_stale?` · ⚠ ${d.workers_stale} 个工兵落后一代`:'');
+  // 本代时间统计：起点 / 已持续 / 速率 / 预计收齐
+  //  口径(2026-09-26 修)：起点取自「本代局文件 mtime / metadata mtime」= 真实产局起点；
+  //  速率优先用主日志近期的实际吞吐(iter_rate_recent)，没有才退回平均值。
+  //  旧的「进程启动时刻」锚点在主进程中途重启时会漂移，导致已持续/ETA 整个算错 ✗
+  const itEl=document.getElementById('iterTime');
+  if(d.iter_start_time){
+    const AC={gen_file:['本代首局落盘时刻','#4ade80'],
+              gen_meta:['本代 metadata 起点','#4ade80'],
+              worker_restart:['工兵重启时刻(兜底锚)','#fbbf24'],
+              proc_start:['进程启动时刻(兜底锚·非产局起点)','#f87171']};
+    const ac=AC[d.iter_anchor]||['起点口径未知','#94a3b8'];
+    const anchorTxt=`<span style="color:${ac[1]}">（${ac[0]}）</span>`;
+    const rateTxt=(d.iter_rate_used==='insufficient')
+      ? `<span style="color:#fbbf24">速率待定（${d.iter_rate_note||'样本不足'}）</span>`
+      : (d.iter_rate_used==='recent'&&d.iter_rate_recent)
+      ? `近期 <b style="color:#e2e8f0">${d.iter_rate_recent}</b> s/局`+
+        `<span style="color:#94a3b8">（${d.iter_recent_span_min}min 内收 ${d.iter_recent_games} 局）</span>`
+      : `平均 <b style="color:#e2e8f0">${d.iter_rate}</b> s/局`;
+    let html=`🕐 本代起点 <b style="color:#e2e8f0">${d.iter_start_time}</b>${anchorTxt}<br>`+
+      `⏱ 已持续 <b style="color:#e2e8f0">${d.iter_elapsed_min}</b> min · ${rateTxt}`;
+    if(d.iter_eta){
+      html+=`<br>🚀 预计收齐 <b style="color:#4ade80">${d.iter_eta}</b> <span style="color:#94a3b8">(约 ${d.iter_remain_min} min 后 · 按${d.iter_rate_used==='recent'?'近期':'平均'}速率)`+
+        `${d.iter_target?` · 本代目标 ${d.iter_target} 局`:''}</span>`;
+    }
+    itEl.innerHTML=html;
+  }else{
+    itEl.textContent='';
+  }
+
+  // ── 每代耗时（检查点间隔）：攒批推理提速效果 ──
+  const durBox=document.getElementById('durBox');
+  const durs=d.iter_durations||[];
+  if(d.iter_dur_last!=null){
+    const BASE=33.7;   // 优化前基线（本地推理, 9 工兵, 平均 33.7 min/代）
+    const speed=(BASE/d.iter_dur_last);
+    let h=`上代(代${durs[durs.length-1].iter}) <b style="color:#e2e8f0">${d.iter_dur_last}</b> min`;
+    if(d.iter_dur_avg3!=null) h+=` · 近3代均 <b style="color:#e2e8f0">${d.iter_dur_avg3}</b> <span style="color:#94a3b8">min（只算非门控代${d.iter_dur_avg3_n?`，n=${d.iter_dur_avg3_n}`:''}）</span>`;
+    h+=`<br>⚡ 相对优化前（${BASE} min/代）提速 <b style="color:#4ade80">${speed.toFixed(2)}×</b>`;
+    h+=`<br><span style="color:#94a3b8">近${durs.length}代: `+
+       durs.slice(-8).map(x=>`代${x.iter}=${x.min}m${x.gated?'🏛含门控':''}${x.t?`@${x.t}`:''}`).join(' · ')+`</span>`;
+    durBox.innerHTML=h;
+  }else{
+    durBox.innerHTML='<span style="color:#94a3b8">日志窗口内还没有两个完成的相邻代（进程重启后重新累积）</span>';
+  }
+
+  // ── 攒批推理服务 ──
+  const infBox=document.getElementById('inferBox');
+  const inf=d.infer||{};
+  if(inf.requests!=null){
+    const ok=inf.alive;
+    const ageTxt=inf.age_s!=null?(inf.age_s<90?`${inf.age_s}s 前更新`:`${Math.round(inf.age_s/60)} min 前更新`):'—';
+    infBox.innerHTML=
+      `${ok?'<b style="color:#4ade80">✅ 在跑</b>':'<b style="color:#f87171">⚠️ 停滞/未启用</b>'}`
+      +`（统计日志 ${ageTxt}${inf.sock?'' : '，socket 不存在'}）<br>`
+      +`平均batch <b style="color:#e2e8f0">${inf.avg_batch}</b> · QPS <b style="color:#e2e8f0">${inf.qps}</b>`
+      +` · forward <b style="color:#e2e8f0">${inf.forward_ms}</b> ms<br>`
+      +`<span style="color:#94a3b8">近30s: 请求 ${inf.requests} · forward ${inf.forwards} 次`
+      +`（单次平均 ${(inf.requests/Math.max(inf.forwards,1)).toFixed(1)} 请求）</span>`;
+  }else{
+    infBox.innerHTML=(inf.age_s!=null
+      ? `<span style="color:#fbbf24">未采到统计行（日志 ${Math.round(inf.age_s/60)} min 前更新）— 可能未用 USE_BATCH_INFER=1 启动</span>`
+      : '<span style="color:#94a3b8">未配置/未采到 infer_server.log</span>');
+  }
+
+  // 🩺 体检 (v38: 空盘value=熔断器输入 + 判别度; 白1距黑1 中位=贴身应对)
+  const hl=(d.health||[]);
+  const hEl=document.getElementById('healthStat');
+  if(hEl){
+    if(!hl.length){
+      hEl.textContent='—（无体检数据：热身期还没学习 / 或本次未采到，刷新重试）';
+    }else{
+      const last=hl[hl.length-1];
+      const w1=last.w1;
+      const col = w1==null ? '#94a3b8' : (w1<=4 ? '#4ade80' : (w1<=8 ? '#fbbf24' : '#f87171'));
+      // 空盘 value: v38 健康线 <0.15, 熔断阈值 0.25 (v37 螺旋时爬到 +0.54)
+      const em=last.empty;
+      const emCol = em==null ? '#94a3b8' : (Math.abs(em)<0.15 ? '#4ade80' : (em<=0.25 ? '#fbbf24' : '#f87171'));
+      // 判别度 = 黑活四 − 空盘: v37 从 0.858 跌到 0.459 只用 1.2h → <0.15 = 红线
+      const dsc=last.disc;
+      const dCol = dsc==null ? '#94a3b8' : (dsc>=0.3 ? '#4ade80' : (dsc>=0.15 ? '#fbbf24' : '#f87171'));
+      const emTrend=hl.slice(-5).map(x=>x.empty!=null?(x.empty>0?'+':'')+x.empty:'—').join('→');
+      hEl.innerHTML=`空盘 <b style="color:${emCol}">${em!=null?(em>0?'+':'')+em:'—'}</b>`+
+        `<span style="color:#64748b">(健康<0.15)</span>`+
+        (dsc!=null?` · 判别度 <b style="color:${dCol}">${dsc}</b><span style="color:#64748b">(红线<0.15)</span>`:'')+
+        `<br>白1距黑1 <b style="color:${col}">${w1!=null?w1:'—'}</b> 格`+
+        `<span style="color:#64748b">（基线14 / 目标≤4）</span>`+
+        (last.act!=null?` · 激活率 ${last.act}%`:'')+
+        `<span style="color:#64748b"> · 空盘近${hl.length}代 ${emTrend}</span>`;
+    }
+  }
+
+  // ── 🎓 教练学习 (v38 主指标: 每代对固定教练的胜率; 数据=本地已同步的自对弈数据) ──
+  const kp=d.kpi||{}, ch=d.coach||{};
+  const kSub=document.getElementById('coachSub');
+  if(kSub && ch.color_name){
+    kSub.innerHTML = ch.coachless
+      ? `纯自对弈（无教练） · 主指标=<b style="color:#e2e8f0">${ch.student_name}方胜率</b>`
+      : `教练 <b style="color:#e2e8f0">${ch.color_name}方</b>(冻结 ${ch.from||'—'}) vs 学生 <b style="color:#e2e8f0">${ch.student_name}方</b> · 主指标=${ch.student_name}方胜率`;
+  }
+  const kRate=document.getElementById('kpiRate'), kUnit=document.getElementById('kpiUnit'),
+        kFill=document.getElementById('kpiFill'), kBox=document.getElementById('kpiBox');
+  if(kRate){
+    const goal=Math.round((kp.target!=null?kp.target:0.55)*100);
+    if(kp.latest){
+      const r=kp.latest.rate;
+      const col = r>=goal ? '#4ade80' : (r>=goal*0.6 ? '#fbbf24' : '#f87171');
+      kRate.innerHTML=`<span style="color:${col}">${r}%</span>`;
+      kUnit.textContent=`（代${kp.latest.iter}${kp.latest.n?` · ${kp.latest.n}局`:''}${kp.partial_gen?' · 未收齐':''}）/ 目标 ${goal}%`;
+      if(kFill) kFill.style.width=Math.min(100, Math.round(r/goal*100))+'%';
+      const _src = kp.source==='log'
+        ? '<span style="color:#4ade80">实时 · 日志</span>'
+        : (kp.source==='worker_log'
+           ? '<span style="color:#4ade80">实时 · 工兵日志逐代聚合</span>'
+           : '<span style="color:#94a3b8">本地已同步数据</span>');
+      const _pend = g => !(g.src === 'log' || (g.n || 0) >= 90);   // 在产代(局数没满) → 不计入主指标
+      let s=`来源: ${_src} · ${kp.student_name||''}方胜率(学生): `+ (kp.gens||[]).filter(g=>!_pend(g)).map(x=>`代${x.iter} <b style="color:#e2e8f0">${x.rate}%</b>`).join(' → ');
+      if(kp.pending) s+=`<br><span style="color:#94a3b8">在产 代${kp.pending.iter}：已 ${kp.pending.n||'?'} 局 = ${kp.pending.rate}%（局数未满，不计入主指标/趋势）</span>`;
+      const _sm=(kp.gens||[]).filter(x=>x.steps_med!=null && !_pend(x));
+      if(_sm.length) s+=`<br>中位手数 ${_sm.map(x=>`代${x.iter}=${x.steps_med}`).join(' · ')} <span style="color:#64748b">(防守落地=手数上升; 仅本地已同步的代有此列)</span>`;
+      if(kp.gap_pp!=null) s+=`<br>距目标还差 <b style="color:#fbbf24">${kp.gap_pp}pp</b>`;
+      if(kp.slope_pp!=null) s+=` · 近期斜率 ${kp.slope_pp>0?'+':''}${kp.slope_pp}pp/代`;
+      if(kp.eta_gens!=null) s+=` → 约 <b style="color:#38bdf8">${kp.eta_gens} 代</b>`;
+      if((kp.lag_gens||[]).length) s+=`<br><span style="color:#fb923c">⚠ 本地缺 代${kp.lag_gens.join(',')}（replay 页还看不到 → 同步自对弈数据后补上）</span>`;
+      if(ch.drop_now!=null) s+=`<br><span style="color:#64748b">教练行剔除: 保留 ${ch.kept_now} 条样本（丢弃 ${ch.drop_now}% = 教练侧走子行，有效样本≈减半的代价）</span>`;
+      if(ch.late) s+=`<br><span style="color:#64748b">晚到局结转(LATE_MERGE): </span><span style="color:#7dd3fc">${ch.late.last}</span>`;
+      kBox.innerHTML=s;
+    }else{
+      kRate.textContent='—'; kUnit.textContent=`/ 目标 ${goal}%`;
+      kBox.innerHTML='<span style="color:#94a3b8">本地还没有该版本的自对弈数据 → 同步后再看（主指标不来自日志）</span>'+
+        (ch.drop_now!=null?`<br><span style="color:#64748b">教练行剔除: 保留 ${ch.kept_now} 条（丢 ${ch.drop_now}%）</span>`:'');
+    }
+  }
+
+  // ── 🔥 空盘value 熔断器 ──
+  const sp=d.spiral||{};
+  const sBox=document.getElementById('spiralBox'), sSub=document.getElementById('spiralSub');
+  if(sSub && sp.thr!=null){
+    sSub.textContent=`连 ${sp.need_rise} 代上升且 >${sp.thr}`+(sp.mode==='warn'?` → 【仅告警】`:` → 回滚到 <${sp.healthy}`)+((sp.series||[]).length?`；本轮已采 ${(sp.series||[]).length} 代`:'')+(sp.round_start?`（本轮从代${sp.round_start} 起）`:'');
+  }
+  if(sBox){
+    const ST={ok:['✅ 正常','#4ade80'], watch:['⚠ 观察','#fbbf24'], warn:['⚠ 接近触发','#fb923c'],
+              trip:['🚨 条件已成立','#f87171'], triggered:['🛑 已触发回滚','#f87171'],
+              guard_err:['⚠️ 守卫报错','#f87171'], nodata:['— 未采到','#94a3b8'],
+              would_trip:['🚨 条件已成立（仅告警）','#fb923c']};
+    const st=ST[sp.status]||['—','#94a3b8'];
+    let s=`<b style="color:${st[1]}">${st[0]}</b>`;
+    if(sp.mode==='warn') s+=` <span style="color:#38bdf8">· 仅告警模式</span><span style="color:#64748b">（不回滚/不停机）</span>`;
+    if(sp.empty!=null) s+=` · 空盘 <b style="color:#e2e8f0">${sp.empty>0?'+':''}${sp.empty}</b>`;
+    s+=` · 连续上升 <b style="color:#e2e8f0">${sp.rise}</b>/${sp.need_rise}`;
+    if(sp.disc!=null) s+=` · 判别度 ${sp.disc}`;
+    if((sp.series||[]).length) s+=`<br>序列: `+(sp.series||[]).map(x=>`代${x.iter}=${x.empty>0?'+':''}${x.empty}`).join(' → ');
+    else s+=`<br><span style="color:#94a3b8">无空盘序列（热身期还没学习 → 首次学习后自动出现；或本次未采到，刷新重试）</span>`;
+    if(sp.trips) s+=`<br><span style="color:#fbbf24">已触发 ${sp.trips} 次（30代内 2 次 → 自动停训）</span>`;
+    if(sp.flag) s+= sp.flag_current
+      ? `<br><span style="color:#f87171">本轮标记文件: ${sp.flag}</span>`
+      : `<br><span style="color:#64748b">历史标记（非本轮，代${sp.flag_iter!=null?sp.flag_iter:'?'}）: ${sp.flag}</span>`;
+    if(sp.guard_err) s+=`<br><span style="color:#fbbf24">⚠ 守卫异常 ${sp.guard_err} 次（该代未做检查）</span>`;
+    sBox.innerHTML=s;
+  }
+
+  // ── 🏛 权重门控 (v37: 每 N 代 候选 vs best 配对赛) ──
+  const gBox=document.getElementById('gateBox');
+  const gt=d.gate||{};
+  const gSub=document.getElementById('gateSub');
+  if(gSub && gt.every){
+    if(gt.enabled===false){
+      gSub.textContent='已关闭（本版主指标 = 对固定教练的胜率，不靠门控晋升）';
+    }else{
+      gSub.textContent=`每 ${gt.every} 代 · ${gt.games||100} 局配对 · 阈值 ${Math.round((gt.thresh||0.55)*100)}%`+(gt.rollback?' · 失败回滚':'');
+    }
+  }
+  if(gBox){
+    if(gt.enabled===false){
+      gBox.innerHTML='<b style="color:#a78bfa">⛔ 门控已关闭</b><br>'+
+        '<span style="color:#94a3b8">候选 vs best 的晋升/回滚在此版不适用（回滚会撤掉学生进步 ✗）→ '+
+        '主指标改为「对固定教练的胜率」，见上方 🎓 教练学习卡</span>';
+    }else if(gt.enabled==null && !(gt.history||[]).length){
+      gBox.innerHTML='<span style="color:#94a3b8">该版本未启门控（v36 及以前无此机制）</span>';
+    }else{
+      const h=(gt.history||[])[gt.history.length-1];
+      const V=(x)=>(x||'').toUpperCase();
+      const VSYM={'PASS':'✓','REJECT':'✗','VOID':'∅'};
+      let s='';
+      if(gt.running){
+        s+=`<b style="color:#a78bfa">🏛 门控赛进行中</b> 代${gt.iter_gate!=null?gt.iter_gate:'?'}`+
+           `${gt.progress!=null?` · 已打 ${gt.progress}/${gt.games||100} 局`:''}`+
+           `${gt.sim?` · sim ${gt.sim}`:''}${gt.shards?` · ${gt.shards} 分片`:''}<br>`;
+      }else if(h){
+        const v=V(h.verdict);
+        const badge = v==='PASS' ? '<b style="color:#4ade80">✅ 通过</b>'
+                    : v==='VOID' ? '<b style="color:#fbbf24">⚠️ 作废</b>'
+                    : v==='REJECT' ? '<b style="color:#f87171">❌ 不通过</b>'
+                    : `<b style="color:#94a3b8">${v||'—'}</b>`;
+        s+=`${badge} 代${h.iteration!=null?h.iteration:'?'}`+
+           (h.manual_rerun?'<span style="color:#7dd3fc"> ·手动重跑</span>':'')+
+           ` · 候取胜率 <b style="color:#e2e8f0">${h.rate!=null?(h.rate*100).toFixed(1)+'%':'—'}</b>`;
+        const hasScore = (h.cand_wins!=null && h.best_wins!=null);
+        if(h.games) s+=`（${hasScore?`${h.cand_wins}:${h.best_wins}${h.draws?` 平${h.draws}`:''}，`:''}${h.games}局${h.sim?`，sim ${h.sim}`:''}${h.elapsed_min?`，${h.elapsed_min}min`:''}）`;
+        s+=`<br>`;
+        if(h.as_black) s+=`<span style="color:#94a3b8">黑白拆解: 候选执黑 ${h.as_black||'—'} · 执白 ${h.as_white||'—'}</span><br>`;
+        if(h.rolled_back) s+=`<span style="color:#fbbf24">已回滚 best</span> `;
+        if(h.no_promote) s+=`<span style="color:#fbbf24">不晋升(best 不变)</span> `;
+        if(h.best_promoted) s+=`<span style="color:#4ade80">best ← ${h.best_promoted}</span>`;
+        if(h.rolled_back||h.no_promote||h.best_promoted) s+=`<br>`;
+        if(h.note) s+=`<span style="color:#64748b;font-size:11px" title="${(h.note||'').replace(/"/g,'&quot;')}">📝 ${h.note.length>96?h.note.slice(0,96)+'…':h.note}</span><br>`;
+      }else{
+        s+=`<span style="color:#94a3b8">还没有门控记录</span><br>`;
+      }
+      if(gt.next_iter!=null){
+        s+=`<span style="color:#94a3b8">下次门控: 代${gt.next_iter}（还差 ${gt.to_next} 代）</span>`;
+      }
+      // 历次判决: 以 gate_history.json 为准 (它含 VOID/手动重跑, 比 tsv 全)
+      const H=(gt.history||[]);
+      if(H.length>1){
+        s+=`<br><span style="color:#64748b;font-size:11px">历次: `+
+           H.slice(-6).map(x=>`代${x.iteration}${x.manual_rerun?'*':''}=${x.rate!=null?(x.rate*100).toFixed(0)+'%':'—'}${VSYM[V(x.verdict)]||'?'}${x.games?`(${x.games}局)`:''}`).join(' · ')+
+           `<span style="color:#475569">（∅=作废, *=手动重跑）</span></span>`;
+      }
+      gBox.innerHTML=s;
+    }
+  }
+
+  // 对局单元：主进程格 + 各工兵（判定按每工兵配额）
+  // ★ 2026-10-11: 每工兵目标优先用后端给的 metadata.worker_games_per_worker (真值 v42=11);
+  //   旧写法 target/工兵数 只是均摊估算, 与真实配额不一致 ✗
+  const quota=(d.worker_games_per_worker||(ws.length?target/ws.length:target));
+  let done=ws.filter(w=>w.game>=quota).length;
+  let run=ws.filter(w=>w.game>0&&w.game<quota).length;
+  document.getElementById('workerStats').textContent=`${done}✓ ${run}🏃 ${ws.length-done-run}⏳`;
+  const g=document.getElementById('wGrid');
+  g.innerHTML='';
+  // 主进程格（优化版不再产局，只调度+训练）
+  const mdiv=document.createElement('div');
+  mdiv.className='wi wi-main';
+  mdiv.title=d.main_status||'主进程';
+  mdiv.textContent=`主 ${mainGames}局 · 调度/训练`;
+  g.appendChild(mdiv);
+  ws.forEach(w=>{
+    const div=document.createElement('div');
+    const stale=(w.iter!=null && d.current_it!=null && w.iter<d.current_it);
+    div.className='wi '+(stale?'w-stale':cls(w.iter==null?null:w.game, quota));
+    // 短标签: 有对局记录=「代内局数」, 否则回退后端状态文字 (衔接中/已就绪)
+    div.textContent=`w${w.id} ${w.iter!=null?(w.game+'/'+w.denom):w.status}`;
+    div.title=(w.iter!=null?`代${w.iter} 局${w.game}/${w.denom} · 黑${w.black} 白${w.white}`:'无对局记录')
+      +`（配额 ${quota} 局）`+(stale?` ⚠ 落后于当前代${d.current_it}`:'');
+    g.appendChild(div);
+  });
+
+  // Loss 图（policy/total 一图，value 单独一图，量级差太大避免压线）
+  const lc=d.loss||{};
+  const its=lc.iterations||[];
+  const lcmp=(d.loss_compare||{});   // 对比线: 主线版本的对照版 (v37 → v36, 见后端 COMPARE_VERSION)
+  const lv18=(lcmp.policy||[]);
+  const lv18v=(lcmp.value||[]);
+  const cits=(lcmp.iterations||[]);
+  const win = parseInt(document.getElementById('maWin').value) || 5;
+  const ma = arr => arr.map((_, i) => {
+    const s = Math.max(0, i - win + 1);
+    const sl = arr.slice(s, i + 1);
+    return sl.reduce((a, b) => a + b, 0) / sl.length;
+  });
+  // {x:it,y:val} 点对 — x轴已改 linear, 两线按真实代对齐
+  const xy=(arr,its2)=>arr.map((v,i)=>({x:(its2[i]!==undefined?its2[i]:i),y:v}));
+  const cmpXY=(arr)=>xy(arr,cits);
+  // 图例/标题 label 随主线版本走 (切版本时主曲线与对比线必须能分清 —— 技能 #493 label 残留坑)
+  const _cmpSpan=document.getElementById('cmpLabel');
+  if(_cmpSpan) _cmpSpan.textContent=`对比: ${CV}`;
+  if(chart){
+    chart.data.labels=[];
+    chart.data.datasets[0].data=xy(lc.policy||[],its);
+    chart.data.datasets[1].data=xy(lc.total||[],its);
+    chart.data.datasets[2].data=xy(ma(lc.policy||[]),its);
+    chart.data.datasets[3].data=cmpXY(lv18);
+    chart.data.datasets[0].label=`${TV} policy`;
+    chart.data.datasets[1].label=`${TV} total`;
+    chart.data.datasets[3].label=`${CV} 对比 policy`;
+    chart.update('none');
+    chartV.data.labels=[];
+    chartV.data.datasets[0].data=xy(lc.value||[],its);
+    chartV.data.datasets[1].data=xy(ma(lc.value||[]),its);
+    chartV.data.datasets[2].data=cmpXY(lv18v);
+    chartV.data.datasets[0].label=`${TV} value`;
+    chartV.data.datasets[2].label=`${CV} 对比 value`;
+    chartV.update('none');
+  }else if(its.length){
+    const ctx=document.getElementById('lossChart').getContext('2d');
+    chart=mkChart(ctx,[
+      {label:`${TV} policy`,data:xy(lc.policy||[],its),borderColor:'#38bdf8',fill:false,tension:.3,pointRadius:4},
+      {label:`${TV} total`,data:xy(lc.total||[],its),borderColor:'#f87171',fill:false,tension:.3,pointRadius:4},
+      {label:`policy MA${win}`,data:xy(ma(lc.policy||[]),its),borderColor:'#e0f2fe',borderDash:[5,3],fill:false,tension:.3,pointRadius:0},
+      {label:`${CV} 对比 policy`,data:cmpXY(lv18),borderColor:'#fb923c',borderDash:[2,2],fill:false,tension:.3,pointRadius:4},
+    ]);
+    const ctxV=document.getElementById('valueChart').getContext('2d');
+    chartV=mkChart(ctxV,[
+      {label:`${TV} value`,data:xy(lc.value||[],its),borderColor:'#4ade80',fill:false,tension:.3,pointRadius:4},
+      {label:`value MA${win}`,data:xy(ma(lc.value||[]),its),borderColor:'#bbf7d0',borderDash:[5,3],fill:false,tension:.3,pointRadius:0},
+      {label:`${CV} 对比 value`,data:cmpXY(lv18v),borderColor:'#fb923c',borderDash:[2,2],fill:false,tension:.3,pointRadius:4},
+    ]);
+  }
+
+
+  // 检查点
+  const ck=document.getElementById('ckList');ck.innerHTML='';
+  [...(d.checkpoints||[])].reverse().slice(0,15).forEach(it=>{
+    const li=document.createElement('li');
+    li.innerHTML=`🧠 代${it} <span>weights</span>`;
+    ck.appendChild(li);
+  });
+
+  // 经验存档
+  const ex=document.getElementById('expList');ex.innerHTML='';
+  [...(d.experiences||[])].reverse().slice(0,10).forEach(it=>{
+    const li=document.createElement('li');
+    li.innerHTML=`📦 代${it}`;
+    ex.appendChild(li);
+  });
+
+  // 日志（后端拉 200 行保证 current_it 提取，前端只渲染最近 40 行）
+  const lb=document.getElementById('logBox');
+  // ★ 2026-11-15: 过滤 gym/numpy 的启动噪音（每行都和训练无关，挤掉真正的日志）
+  const NOISE=/Gym has been unmaintained|Please upgrade to Gymnasium|Users of this version of Gym|See the migration guide|logger\.warn|UserWarning|FutureWarning|Casting input/;
+  lb.innerHTML=(d.log||[]).filter(l=>!NOISE.test(l)).slice(-40).map(l=>{
+    const clean=l.replace(/^[\d-]+ [\d:,]+,\d+ \[INFO\] /,'');
+    return `<div>${clean}</div>`;
+  }).join('');
+  lb.scrollTop=lb.scrollHeight;
+}
+
+async function load(){
+  try{
+    const r=await fetch('/api/training');
+    const d=await r.json();
+    window._ck = d.checkpoints || [];   // 服务器最新权重代 (对比用)
+    update(d);
+    fillWtSelect();
+  }catch(e){console.error(e)}
+}
+// 手动刷新模式 (2026-08-10: 去掉8秒自动轮询, 防SSH限流)
+async function refreshAll() {
+  // 2026-08-22: 先刷新训练数据 → 对比服务器 vs 本地最新代 → 有新的才同步权重 (本地已最新不重复SSH)
+  await load();
+  let localMax = -1;
+  try {
+    const r = await fetch('/api/weights').then(r => r.json());
+    const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+    const tv = window._trainVer || 'v38';       // 跟主线版本走 (切版本别再按 v36 判)
+    const vmain = (r.weights || []).filter(w => w.version === tv);
+    localMax = Math.max(-1, ...vmain.map(w => itNum(w.file)));
+  } catch(e) { console.error('weights:', e); }
+  const serverMax = Math.max(-1, ...(window._ck || []));
+  if (serverMax > localMax) {
+    // 服务器有新权重 → 触发同步 + 清缓存重新拉
+    try { await fetch('/api/sync-weights', {method: 'POST'}); } catch(e) { console.error('sync:', e); }
+    _wtWeights = [];
+    const sel = document.getElementById('wtSelect');
+    if (sel) sel.innerHTML = '';
+    await load();
+  }
+  await loadSyncState();
+}
+load();
+// setInterval(load,8000);  // 已禁用: 自动轮询会导致SSH连接过高限流
+
+// ── 网络部件权重趋势（三段拆解：共享主干/Policy/Value 移动距离，独立图表） ──
+let wtSeq=[];          // [{file,version,label}, ...] 按选择顺序
+let trendCharts={};    // {main, policy, value}
+
+let _wtWeights=[];
+function fillWtSelect(){
+  const sel=document.getElementById('wtSelect');
+  if(!sel.options.length){
+    fetch('/api/weights').then(r=>r.json()).then(d=>{
+      _wtWeights=d.weights||[];
+      const vers=[...new Set(_wtWeights.map(w=>w.version))].sort();
+      const verSel=document.getElementById('wtVer');
+      verSel.innerHTML=vers.map(v=>`<option value="${v}">${v}</option>`).join('');
+      verSel.value=(()=>{const _pref=[d.active||'v39','v39','v38','v37','v36','v35','v34','v33','v32','v31','v29','v28','v27','v26','v18','v16','v14','v12'];
+        return _pref.find(v=>vers.includes(v))||vers[0];})();
+      const itNum=f=>{const m=f.match(/weights_it(\d+)/);return m?parseInt(m[1]):-1;};
+      const fillGen=()=>{
+        const v=verSel.value;
+        const list=_wtWeights.filter(w=>w.version===v).sort((a,b)=>itNum(b.file)-itNum(a.file));
+        sel.innerHTML='';
+        list.forEach(w=>{
+          const o=document.createElement('option');
+          o.value=w.file; o.dataset.version=w.version; o.textContent=w.label;
+          sel.appendChild(o);
+        });
+      };
+      fillGen();
+      verSel.onchange=fillGen;
+    }).catch(e=>console.error(e));
+  }
+}
+
+function addWt(){
+  const sel=document.getElementById('wtSelect');
+  const opts=[...sel.selectedOptions];
+  if(!opts.length){alert('先从列表选择权重');return}
+  opts.forEach(o=>{
+    const label=o.textContent.replace(/ \[v\d\]$/,'');
+    if(!wtSeq.some(x=>x.file===o.value)){
+      wtSeq.push({file:o.value,version:o.dataset.version||'v2',label});
+    }
+  });
+  renderWtSeq();
+}
+
+function clearWt(){wtSeq=[];renderWtSeq();}
+
+function renderWtSeq(){
+  const el=document.getElementById('wtSeq');
+  el.textContent=wtSeq.length?wtSeq.map((x,i)=>`${i+1}. ${x.label}`).join(' → '):'未选择权重';
+}
+
+async function viewTrend(){
+  if(!wtSeq.length){alert('请先加入权重到序列');return}
+  const st=document.getElementById('netTrendStatus');
+  st.textContent='分析中…';
+  try{
+    const r=await fetch('/api/net-trend',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({files:wtSeq.map(x=>({file:x.file,version:x.version}))})
+    });
+    const d=await r.json();
+    if(d.error){st.textContent='错误: '+d.error;return}
+    const res=(d.results||[]).filter(x=>!x.error);
+    if(!res.length){st.textContent='没有成功分析的结果';return}
+    drawNetTrend(res);
+    st.textContent=`已分析 ${res.length} 个权重（顺序: ${res.map(x=>x.label).join(' → ')}）—— 移动距离 = 该代相对上一代的权重变化量，首个为 0 起点`;
+  }catch(e){st.textContent='请求失败: '+e}
+}
+
+async function syncNow(){
+  const btn=document.getElementById('syncBtn');
+  const st=document.getElementById('syncState');
+  btn.disabled=true; btn.textContent='⏳ 同步中…'; st.textContent='正在连接服务器…';
+  try{
+    const r=await fetch('/api/sync-weights',{method:'POST'});
+    const d=await r.json();
+    if(d.busy){st.textContent='⏳ 后台同步进行中，请稍候再试';}
+    else{st.textContent=`${d.msg}${d.state?.last?'（'+d.state.last+'）':''}`;}
+    // 刷新权重下拉（可能有新权重）
+    const sel=document.getElementById('wtSelect'); sel.innerHTML='';
+    fillWtSelect();
+  }catch(e){st.textContent='同步失败: '+e}
+  btn.disabled=false; btn.textContent='🔄 立即同步权重';
+}
+
+async function loadSyncState(){
+  try{
+    const r=await fetch('/api/sync-state');
+    const d=await r.json();
+    const st=document.getElementById('syncState');
+    if(d.status==='ok'&&d.last){
+      st.textContent=`上次同步 ${d.last}：${d.msg}`;
+    }
+  }catch(e){}
+}
+loadSyncState();
+// setInterval(loadSyncState,60000);  // 已禁用: 并入手动刷新
+
+function mkTrendChart(canvasId, color){
+  return new Chart(document.getElementById(canvasId).getContext('2d'),{
+    type:'line',
+    data:{labels:[],datasets:[{label:'',data:[],borderColor:color,fill:false,tension:.3,pointRadius:3}]},
+    options:{
+      responsive:true,animation:false,
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{ticks:{color:'#64748b',font:{size:9}},grid:{color:'#1e293b'}},
+        y:{ticks:{color:'#64748b',font:{size:9}},grid:{color:'#1e293b'}}
+      }
+    }
+  });
+}
+
+function drawNetTrend(res){
+  const labels=res.map(x=>x.label);
+  const getMov=(x,sec)=> x.movement ? (x.movement[sec]||0) : 0;
+  const secs=[['main','#38bdf8'],['policy','#f472b6'],['value','#4ade80']];
+  secs.forEach(([sec,color])=>{
+    if(!trendCharts[sec]) trendCharts[sec]=mkTrendChart('netTrend'+sec.charAt(0).toUpperCase()+sec.slice(1), color);
+    const ch=trendCharts[sec];
+    ch.data.labels=labels;
+    ch.data.datasets[0].data=res.map(x=>getMov(x,sec));
+    ch.update();
+  });
+}
+</script>
+</body>
+</html>

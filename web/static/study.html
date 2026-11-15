@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>摆谱研究 · AlphaZero</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #0b1220; color: #e2e8f0; min-height: 100vh; }
+
+nav { display: flex; gap: 8px; padding: 14px 16px 0; flex-wrap: wrap; }
+nav a { color: #7dd3fc; text-decoration: none; font-size: 13px; padding: 6px 14px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+nav a:hover { background: #1e293b; }
+nav a.active { background: #1e293b; border-color: #7dd3fc; color: #e2e8f0; }
+nav a i { margin-right: 5px; }
+
+.container { display: flex; gap: 16px; padding: 12px; align-items: flex-start; }
+
+/* ── 棋盘 ── */
+.board-wrapper { position: relative; background: #dcb35c; border-radius: 8px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.5); flex-shrink: 0; }
+canvas#board { display: block; cursor: pointer; width: 100%; height: auto; }
+.thinking-overlay { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.3); border-radius: 8px; z-index: 10; justify-content: center; align-items: center; }
+.thinking-overlay.show { display: flex; }
+.spinner { width: 48px; height: 48px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── 侧栏 ── */
+.sidebar { width: 400px; color: #e8d5b0; flex-shrink: 0; }
+
+/* ── 结果列 (独立右列) ── */
+.result-col { width: 360px; flex-shrink: 0; }
+.sidebar h1 { font-size: 20px; margin-bottom: 2px; letter-spacing: 1px; }
+.sidebar .sub { font-size: 12px; color: #a08050; margin-bottom: 12px; }
+.panel { background: #3e2818; border-radius: 8px; padding: 12px; margin-bottom: 8px; }
+.panel h3 { font-size: 13px; color: #c8a870; margin-bottom: 8px; border-bottom: 1px solid #5a3820; padding-bottom: 5px; }
+.settings-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.settings-row .panel { margin-bottom: 0; }
+.row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.row label { font-size: 13px; min-width: 40px; color: #b89870; }
+.row select, .row input { flex: 1; padding: 5px 8px; border: 1px solid #5a3820; border-radius: 4px; background: #2c1810; color: #e8d5b0; font-size: 13px; outline: none; }
+.row select:focus, .row input:focus { border-color: #dcb35c; }
+.row select option { background: #2c1810; }
+
+.color-tog { display: flex; gap: 0; }
+.color-tog button { flex: 1; padding: 6px; border: 2px solid #5a3820; background: #2c1810; color: #806040; font-size: 16px; cursor: pointer; transition: all .15s; }
+.color-tog button:first-child { border-radius: 6px 0 0 6px; }
+.color-tog button:last-child { border-radius: 0 6px 6px 0; }
+.color-tog button.active-black { border-color: #dcb35c; background: #3e2818; color: #ccc; }
+.color-tog button.active-white { border-color: #dcb35c; background: #3e2818; color: #fff; }
+
+.check-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.check-row label { font-size: 12px; color: #b89870; cursor: pointer; }
+.check-row input[type="checkbox"] { accent-color: #dcb35c; }
+
+.btn-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.btn-row .btn { flex: 1; padding: 8px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 600; transition: all .2s; }
+.btn-sm { padding: 6px 12px; border: none; border-radius: 5px; font-size: 12px; cursor: pointer; font-weight: 600; transition: all .15s; }
+.btn-think { background: #059669; color: #fff; width: 100%; padding: 10px; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; font-weight: 600; transition: all .2s; }
+.btn-think:hover { background: #059669; transform: translateY(-1px); }
+.btn-think:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.btn-undo { background: #8b5cf6; color: #fff; }
+.btn-undo:hover { background: #7c3aed; }
+.btn-clear { background: #6b4230; color: #e8d5b0; }
+.btn-clear:hover { background: #7a5238; }
+.btn-undo:disabled, .btn-clear:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── 结果 ── */
+.result-panel { display: none; }
+.result-panel.show { display: block; }
+.result-header { font-size: 14px; color: #38bdf8; font-weight: 600; margin-bottom: 8px; }
+.rec-row { display: flex; gap: 10px; margin-bottom: 4px; padding: 5px 8px; border-radius: 5px; align-items: center; }
+.rec-policy { background: rgba(16,185,129,.15); border-left: 3px solid #10b981; }
+.rec-mcts { background: rgba(251,191,36,.15); border-left: 3px solid #fbbf24; }
+.rec-label { font-size: 11px; font-weight: 600; min-width: 48px; }
+.rec-policy .rec-label { color: #10b981; }
+.rec-mcts .rec-label { color: #fbbf24; }
+.rec-detail { font-size: 13px; color: #e8d5b0; }
+.rec-detail small { color: #94a3b8; font-size: 11px; }
+.rec-list { font-size: 11px; color: #94a3b8; margin-left: 58px; margin-top: -2px; margin-bottom: 6px; }
+
+.status { font-size: 13px; padding: 4px 8px; background: #2c1810; border-radius: 5px; min-height: 26px; margin-top: 4px; color: #a08050; }
+.status.ok { color: #4ade80; }
+.steps { font-size: 11px; color: #605030; margin-top: 2px; }
+
+/* ── 落子记录（与对弈页一致） ── */
+.history { max-height: 160px; overflow-y: auto; font-size: 12px; color: #a08050; }
+.history::-webkit-scrollbar { width: 4px; }
+.history::-webkit-scrollbar-thumb { background: #5a3820; border-radius: 2px; }
+.history .hrow { display: flex; gap: 4px; padding: 2px 0; }
+.history .hrow .idx { color: #705030; min-width: 24px; }
+.history .hrow .b { color: #ccc; }
+.history .hrow .w { color: #f0d0b0; }
+
+@media (max-width: 768px) {
+  .container { flex-direction: column; align-items: center; padding: 6px; gap: 8px; }
+  .board-wrapper { padding: 6px; width: 100%; }
+  canvas#board { max-width: 100%; }
+  .sidebar { width: 100%; max-width: 100%; }
+  .result-col { width: 100%; max-width: 100%; }
+  .thinking-overlay .spinner { width: 32px; height: 32px; border-width: 3px; }
+}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study" class="active"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard"><i>📊</i> 训练监控</a>
+  <a href="/network"><i>🧠</i> 网络前向</a>
+  <a href="/mcts"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution"><i>🧬</i> 开局演化</a>
+  <a href="/replay"><i>🗂</i> 自对弈数据</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+<div class="container">
+  <div class="board-wrapper">
+    <canvas id="board" width="560" height="560"></canvas>
+    <div class="thinking-overlay" id="thinking"><div class="spinner"></div></div>
+  </div>
+  <div class="sidebar">
+    <h1>🔬 摆谱研究</h1>
+    <div class="sub">自由摆棋 · 深度分析</div>
+
+    <div class="settings-row">
+      <div class="panel" style="flex:0 0 170px;min-width:0">
+        <h3>设置</h3>
+        <div class="row">
+          <label>⚖️ 权重</label>
+          <select id="weightVer" title="先选版本" style="flex:1"><option>加载中…</option></select>
+          <select id="weightSel" title="再选代" style="flex:1"><option>加载中…</option></select>
+        </div>
+        <div class="row">
+          <label>🔄 模拟</label>
+          <input type="number" id="simCount" min="1" max="800" value="200" step="1">
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1;min-width:0">
+        <h3>落子记录</h3>
+        <div class="history" id="history"><span style="color:#605030;">摆棋后显示</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>摆棋</h3>
+      <div class="color-tog" id="colorToggle">
+        <button id="btnBlack" class="active-black" onclick="setColor(1)">⚫ 黑</button>
+        <button id="btnWhite" onclick="setColor(-1)">⚪ 白</button>
+      </div>
+      <div class="check-row" style="margin-top:4px">
+        <input type="checkbox" id="autoAlt" checked>
+        <label for="autoAlt">自动交替（白→黑→白…）</label>
+      </div>
+      <div class="btn-row" style="margin-top:6px">
+        <button class="btn btn-undo" id="btnUndo" onclick="undoStone()" disabled>↩ 回退</button>
+      <button class="btn btn-undo" id="btnRedo" onclick="redoStone()" disabled>↪ 前进</button>
+        <button class="btn btn-clear" id="btnClear" onclick="clearBoard()" disabled>🗑 清空</button>
+      </div>
+      <div style="text-align:right;font-size:11px;color:#605030;margin-top:2px" id="stoneCount">棋子: 0</div>
+    </div>
+
+    <div class="btn-row" style="margin-top:6px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+      <input id="posName" placeholder="局面名称" style="flex:1;min-width:80px;padding:5px 8px;border:1px solid #5a3820;border-radius:4px;background:#2c1810;color:#e8d5b0;font-size:12px">
+      <input id="ansInput" placeholder="🎯推荐选点 F8,J10" title="出题: 你认为该局面正确的选点(逗号分隔, 按优先级)" style="flex:1.2;min-width:110px;padding:5px 8px;border:1px solid #b45309;border-radius:4px;background:#2c1810;color:#fbbf24;font-size:12px">
+      <input id="scoreInput" placeholder="🎯评分" title="当前玩家视角胜率(-1~1), 用于将来测value准确率" style="flex:0.6;min-width:60px;padding:5px 8px;border:1px solid #059669;border-radius:4px;background:#2c1810;color:#34d399;font-size:12px" type="number" min="-1" max="1" step="0.05">
+      <button class="btn btn-clear" onclick="savePosition()" style="background:#3e2818">💾 保存</button>
+    </div>
+    <div class="btn-row" style="margin-top:4px;display:flex;gap:4px;align-items:center">
+      <select id="posSelect" onmousedown="this.value=''" onchange="loadPosition()" style="flex:1;padding:5px 8px;border:1px solid #5a3820;border-radius:4px;background:#2c1810;color:#e8d5b0;font-size:12px"></select>
+      <button class="btn btn-clear" onclick="loadPosition()" style="background:#3e2818">📥 加载</button>
+      <button class="btn btn-clear" onclick="deletePosition()" style="background:#3e2818">🗑</button>
+    </div>
+    <div style="text-align:right;font-size:10px;color:#605030" id="posCount"></div>
+
+    <button class="btn-think" id="btnThink" onclick="analyze()" disabled>🔍 深度思考</button>
+
+    <div class="steps" id="stepInfo">💡 点击棋盘放置棋子 · 选好局面后点「深度思考」</div>
+  </div>
+
+  <div class="result-col">
+    <div class="panel" style="background:#1e293b;border:1px solid #334155">
+      <div class="result-header">📊 分析结果</div>
+      <div class="status" id="studyStatus">点击「深度思考」分析局面</div>
+      <div class="panel result-panel" id="resultPanel" style="background:transparent;border:none;padding:8px 0 0;margin:8px 0 0;border-top:1px solid #334155">
+        <div class="rec-row rec-policy">
+          <span class="rec-label">🟢 网络</span>
+          <span class="rec-detail" id="recPolicy">—</span>
+        </div>
+        <div class="rec-list" id="recPolicyList"></div>
+        <div class="rec-row rec-mcts">
+          <span class="rec-label">🟡 MCTS</span>
+          <span class="rec-detail" id="recMCTS">—</span>
+        </div>
+        <div class="rec-list" id="recMCTSList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 常量 ──
+const BOARD_SIZE = 15;
+const COLS = 560, PADDING = 30, CELL = (COLS - 2 * PADDING) / (BOARD_SIZE - 1);
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const API = '';
+const LETTERS = 'ABCDEFGHIJKLMNO';
+
+// ── 状态 ──
+let stones = [];
+let redoStack = [];   // 前进(redo)栈 (2026-08-28)      // {r, c, p} 按落子顺序
+let placingColor = 1; // 1=黑, -1=白（摆棋颜色）
+let analyzing = false;
+let lastAnalysis = null; // 上次分析结果
+let viewColor = 1;       // 当前显示视角: 1=黑视角, -1=白视角（切换后翻转胜率/Q值）
+
+// ── 初始化 ──
+window.onload = async () => {
+  try {
+    const r = await fetch(API + '/api/weights').then(d => d.json());
+    const ws = (r.weights || []).filter(w => w.version !== 'v16');  // v16 是 9×9, 摆谱页(15×15)不兼容
+    // 二级菜单: 版本 → 代
+    window._weights = ws;
+    const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+    const vers = [...new Set(ws.map(w => w.version))].sort();
+    const verSel = document.getElementById('weightVer');
+    verSel.innerHTML = vers.map(v => `<option value="${v}">版本 ${v}</option>`).join('');
+    verSel.value = (()=>{{const _pref=[r.active||'v39','v39','v38','v37','v36','v35','v34','v33','v32','v31','v29','v28','v27','v26','v25','v24','v23','v18','v16','v14','v12','v10'];return _pref.find(v=>vers.includes(v))||vers[0];}})();
+    const fillGen = () => {
+      const v = verSel.value;
+      const list = ws.filter(w => w.version === v).sort((a, b) => itNum(b.file) - itNum(a.file));
+      document.getElementById('weightSel').innerHTML =
+        list.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('');
+    };
+    fillGen();
+    verSel.onchange = fillGen;
+    if (ws.length > 0) {
+      document.getElementById('btnThink').disabled = false;
+      document.getElementById('btnClear').disabled = false;
+    }
+  } catch (e) { console.error(e); }
+  drawBoard();
+};
+
+// ── 颜色/视角切换 ──
+function setColor(c) {
+  placingColor = c;
+  document.getElementById('btnBlack').className = c === 1 ? 'active-black' : '';
+  document.getElementById('btnWhite').className = c === -1 ? 'active-white' : '';
+  // 切换视角：如果已有分析结果，即时翻转胜率/Q值显示（不用重新深度思考）
+  if (lastAnalysis && lastAnalysis.black_win_rate != null) {
+    viewColor = c;
+    showResults(lastAnalysis);
+    drawBoard();
+  }
+}
+
+// ── 棋盘绘制 ──
+function drawBoard() {
+  ctx.clearRect(0, 0, COLS, COLS);
+
+  // 背景
+  const grad = ctx.createLinearGradient(0, 0, COLS, COLS);
+  grad.addColorStop(0, '#dcb35c'); grad.addColorStop(.5, '#c8a04c'); grad.addColorStop(1, '#dcb35c');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, COLS, COLS);
+
+  // 木纹（固定种子伪随机，避免每次重绘闪烁）
+  ctx.strokeStyle = 'rgba(160,120,60,.15)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 40; i++) {
+    const seed = i * 127.31 + 311.7;
+    const y = (Math.sin(seed) * 0.5 + 0.5) * COLS;
+    const dy = (Math.sin(seed * 1.7) * 0.5 - .25) * 6;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(COLS, y + dy); ctx.stroke();
+  }
+
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = 1.2;
+  for (let i = 0; i < BOARD_SIZE; i++) {
+    const p = PADDING + i * CELL;
+    ctx.beginPath(); ctx.moveTo(PADDING, p); ctx.lineTo(PADDING + (BOARD_SIZE-1) * CELL, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, PADDING); ctx.lineTo(p, PADDING + (BOARD_SIZE-1) * CELL); ctx.stroke();
+  }
+  ctx.lineWidth = 2; ctx.strokeRect(PADDING, PADDING, (BOARD_SIZE-1) * CELL, (BOARD_SIZE-1) * CELL);
+
+  // 星位
+  ctx.fillStyle = '#3a2818';
+  [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]].forEach(([r,c]) => {
+    const x = PADDING + c * CELL, y = PADDING + r * CELL;
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
+  });
+
+  // 价值地图（Q 是当前执棋方视角，按 viewColor 翻转符号：黑视角=黑有利为正）
+  if (lastAnalysis && lastAnalysis.value_map) {
+    const vm = lastAnalysis.value_map;
+    const occ = new Set(stones.map(s => s.r + ',' + s.c));
+    const qFlip = (viewColor === 1 ? 1 : -1);
+    let qMin = -1, qMax = 1;
+    for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+      if (occ.has(r + ',' + c)) continue;
+      const q = vm[r] && vm[r][c];
+      if (q != null) { const qq = q * qFlip; qMin = Math.min(qMin, qq); qMax = Math.max(qMax, qq); }
+    }
+    const qRange = Math.max(0.001, qMax - qMin);
+    for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+      if (occ.has(r + ',' + c)) continue;
+      const q = vm[r] && vm[r][c];
+      if (q == null) continue;
+      const qq = q * qFlip;
+      const x = PADDING + c * CELL, y = PADDING + r * CELL;
+      const norm = (qq - qMin) / qRange;
+      const rv = Math.round(255 * Math.max(0, Math.min(1, (norm - 0.5) * 2 + 0.5)));
+      const bv = Math.round(255 * Math.max(0, Math.min(1, (0.5 - norm) * 2 + 0.5)));
+      const gv = Math.round(180 * (1 - Math.abs(norm - 0.5) * 2));
+      const alpha = 0.15 + 0.35 * Math.abs(norm - 0.5) * 2;
+      ctx.beginPath(); ctx.arc(x, y, CELL * 0.45, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${rv},${gv},${bv},${alpha})`; ctx.fill();
+      if (Math.abs(qq) > 0.05) {
+        ctx.fillStyle = qq > 0 ? 'rgba(200,60,60,0.7)' : 'rgba(60,100,200,0.7)';
+        ctx.font = `bold ${CELL * 0.28}px sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText((qq > 0 ? '+' : '') + qq.toFixed(2), x, y + 0.5);
+      }
+    }
+  }
+
+  // 坐标
+  ctx.fillStyle = '#5a3820'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < BOARD_SIZE; i++) {
+    const p = PADDING + i * CELL;
+    ctx.fillText(LETTERS[i], p, 10); ctx.fillText(LETTERS[i], p, COLS - 10);
+    ctx.fillText(BOARD_SIZE - i, 12, p); ctx.fillText(BOARD_SIZE - i, COLS - 12, p);
+  }
+
+  // 棋子
+  for (const s of stones) {
+    const x = PADDING + s.c * CELL, y = PADDING + s.r * CELL;
+    const rad = CELL * .43;
+    const isB = s.p === 1;
+    ctx.beginPath(); ctx.arc(x + 2, y + 2, rad, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fill();
+    const g = ctx.createRadialGradient(x - rad*.3, y - rad*.3, rad*.1, x, y, rad);
+    if (isB) { g.addColorStop(0,'#666'); g.addColorStop(.6,'#222'); g.addColorStop(1,'#000'); }
+    else { g.addColorStop(0,'#fff'); g.addColorStop(.6,'#eee'); g.addColorStop(1,'#bbb'); }
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI*2);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = isB ? 0 : .5; ctx.strokeStyle = '#999'; ctx.stroke();
+    ctx.fillStyle = isB ? '#ccc' : '#333';
+    ctx.font = `bold ${CELL * .35}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(s.n, x, y + 0.5);
+  }
+
+  // 推荐标记
+  if (lastAnalysis) {
+    // 策略网络推荐 🟢 实心绿圈
+    if (lastAnalysis.policy_top && lastAnalysis.policy_top.length > 0) {
+      const top = lastAnalysis.policy_top[0];
+      const x = PADDING + top.c * CELL, y = PADDING + top.r * CELL;
+      ctx.beginPath(); ctx.arc(x, y, CELL * 0.48, 0, Math.PI * 2);
+      ctx.strokeStyle = '#10b981'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, CELL * 0.14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(16,185,129,.5)'; ctx.fill();
+    }
+    // MCTS推荐 🟡 实心金圈
+    if (lastAnalysis.mcts_top && lastAnalysis.mcts_top.length > 0) {
+      const top = lastAnalysis.mcts_top[0];
+      const x = PADDING + top.c * CELL, y = PADDING + top.r * CELL;
+      ctx.beginPath(); ctx.arc(x, y, CELL * 0.48, 0, Math.PI * 2);
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, CELL * 0.14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(251,191,36,.5)'; ctx.fill();
+    }
+  }
+}
+
+// ── 点击事件 ──
+canvas.addEventListener('click', handleClick);
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handleClick({ clientX: t.clientX, clientY: t.clientY });
+}, { passive: false });
+
+function handleClick(e) {
+  if (analyzing) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (COLS / rect.width);
+  const my = (e.clientY - rect.top) * (COLS / rect.height);
+  let minD = CELL * .6, hitR = -1, hitC = -1;
+  for (let r = 0; r < BOARD_SIZE; r++) for (let c = 0; c < BOARD_SIZE; c++) {
+    const d = Math.hypot(mx - (PADDING + c * CELL), my - (PADDING + r * CELL));
+    if (d < minD) { minD = d; hitR = r; hitC = c; }
+  }
+  if (hitR < 0) return;
+  // 检查是否已有棋子
+  if (stones.some(s => s.r === hitR && s.c === hitC)) return;
+
+  redoStack = [];   // 新落子作废前进历史
+  stones.push({r: hitR, c: hitC, p: placingColor, n: stones.length + 1});
+  lastAnalysis = null; // 清掉旧分析结果
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('studyStatus').textContent = '新棋子已放置，可再次分析';
+  document.getElementById('studyStatus').className = 'status';
+
+  if (document.getElementById('autoAlt').checked) {
+    placingColor = -placingColor;
+    setColor(placingColor);
+  }
+
+  updateUI();
+  drawBoard();
+}
+
+// ── 保存/加载局面 (stones: {r,c,p,n}) ──
+// 🎯 出题: 解析推荐选点 "F8, J10" → [{r,c}...] (顺序=优先级)
+function parseAnswerList(s) {
+  const out = [];
+  const parts = (s || '').split(/[,，;；\s]+/).filter(Boolean);
+  for (const pt of parts) {
+    let m = pt.toUpperCase().match(/^([A-O])([1-9]|1[0-5])$/);
+    if (m) { out.push({r: 15 - parseInt(m[2]), c: m[1].charCodeAt(0) - 65}); continue; }
+    m = pt.match(/^([1-9]|1[0-5])[,xX-]([1-9]|1[0-5])$/);
+    if (m) out.push({r: parseInt(m[1]) - 1, c: parseInt(m[2]) - 1});
+  }
+  return out.length ? out : null;
+}
+async function savePosition() {
+  const name0 = document.getElementById('posName').value.trim();
+  if (!name0) { alert('请输入局面名称'); return; }
+  if (!stones.length) { alert('棋盘为空'); return; }
+  const answer = parseAnswerList(document.getElementById('ansInput').value);
+  const score = (() => { const v = parseFloat(document.getElementById('scoreInput').value); return isNaN(v) ? null : v; })();
+  // 🎯 出题: 写了推荐点 → 标题自动加"题目:"前缀
+  const name = answer ? (name0.startsWith('题目:') ? name0 : '题目:' + name0) : name0;
+  const r = await fetch('/api/positions/save', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, tag: '', stones: stones.map(x => ({r: x.r, c: x.c, v: x.p})), answer, score})}).then(d => d.json());
+  if (r.ok) { document.getElementById('posName').value = ''; document.getElementById('ansInput').value = ''; loadPositionList(); }
+}
+let positionsCache = [];
+async function loadPositionList() {
+  const r = await fetch('/api/positions/list').then(d => d.json());
+  positionsCache = r.positions || [];
+  const sel = document.getElementById('posSelect');
+  sel.innerHTML = positionsCache.map((p, i) =>
+    `<option value="${i}">${p.name}${p.tag ? ' [' + p.tag + ']' : ''}${p.created ? ' ·' + p.created : ''}</option>`).join('');
+  document.getElementById('posCount').textContent = positionsCache.length + ' 个';
+}
+async function loadPosition() {
+  const idx = parseInt(document.getElementById('posSelect').value);
+  const p = positionsCache[idx];
+  if (!p) return;
+    stones = p.stones.map((x, i) => ({r: x.r, c: x.c, p: x.v, n: i + 1})); redoStack = [];
+  document.getElementById('posName').value = p.name || '';
+  // 🎯 编辑回填 (2026-08-26): 已有 answer/score → 输入框, 可补打分/选点后保存覆盖
+  const _fc = (r, c) => String.fromCharCode(65 + c) + (15 - r);
+  document.getElementById('ansInput').value = (p.answer || []).map(a => _fc(a.r, a.c)).join(', ');
+  document.getElementById('scoreInput').value = (p.score !== null && p.score !== undefined) ? p.score : '';
+  const nb = stones.filter(x => x.p === 1).length;
+  placingColor = (nb === stones.length - nb) ? 1 : -1;
+  setColor(placingColor);
+  lastAnalysis = null;
+  document.getElementById('resultPanel').classList.remove('show');
+  updateUI();
+  drawBoard();
+}
+async function deletePosition() {
+  const idx = parseInt(document.getElementById('posSelect').value);
+  const p = positionsCache[idx];
+  if (!p || !confirm('删除局面 ' + p.name + '?')) return;
+  const r = await fetch('/api/positions/delete', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: p.name})}).then(d => d.json());
+  if (r.ok) loadPositionList();
+}
+loadPositionList();
+
+// ── 回退 ──
+function undoStone() {
+  if (stones.length === 0) return;
+  redoStack.push(stones.pop());   // 回退的步进 redo 栈, 可前进恢复
+  if (document.getElementById('autoAlt').checked) {
+    placingColor = -placingColor;
+    setColor(placingColor);
+  }
+  lastAnalysis = null;
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('studyStatus').textContent = '已回退';
+  document.getElementById('studyStatus').className = 'status';
+  updateUI();
+  drawBoard();
+}
+
+// ── 清空 ──
+
+function redoStone() {
+  if (!redoStack.length) return;
+  stones.push(redoStack.pop());
+  if (document.getElementById('autoAlt').checked) {
+    placingColor = -placingColor;
+    setColor(placingColor);
+  }
+  lastAnalysis = null;
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('studyStatus').textContent = '已前进';
+  document.getElementById('studyStatus').className = 'status';
+  updateUI();
+  drawBoard();
+}
+
+function clearBoard() {
+  stones = []; redoStack = [];
+  lastAnalysis = null;
+  document.getElementById('resultPanel').classList.remove('show');
+  document.getElementById('studyStatus').textContent = '棋盘已清空';
+  document.getElementById('studyStatus').className = 'status';
+  updateUI();
+  drawBoard();
+}
+
+// ── 更新UI ──
+function updateUI() {
+  document.getElementById('stoneCount').textContent = '棋子: ' + stones.length;
+  document.getElementById('btnUndo').disabled = stones.length === 0;
+  document.getElementById('btnThink').disabled = stones.length === 0;
+  updateHistory();
+}
+
+// ── 更新落子记录（与对弈页一致） ──
+function updateHistory() {
+  const el = document.getElementById('history');
+  if (!stones || stones.length === 0) { el.innerHTML = '<span style="color:#605030;">空</span>'; return; }
+  const items = stones.map(st => {
+    const n = st.n;
+    const p = st.p === 1 ? '⚫' : '⚪';
+    const coord = `${LETTERS[st.c]}${BOARD_SIZE - st.r}`;
+    const cls = st.p === 1 ? 'b' : 'w';
+    return `<div class="hrow"><span class="idx">${n}.</span><span class="${cls}">${p} ${coord}</span></div>`;
+  }).join('');
+  el.innerHTML = items;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── 深度思考 ──
+async function analyze() {
+  if (stones.length === 0 || analyzing) return;
+
+  const weight = document.getElementById('weightSel').value;
+  const simVal = parseInt(document.getElementById('simCount').value);
+  const simCount = Number.isNaN(simVal) ? 200 : simVal;
+
+  analyzing = true;
+  document.getElementById('thinking').classList.add('show');
+  document.getElementById('btnThink').disabled = true;
+  document.getElementById('studyStatus').textContent = '🤔 分析中…';
+  document.getElementById('studyStatus').className = 'status';
+
+  try {
+    const r = await fetch(API + '/api/study/analyze', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({stones, weight, sim_count: simCount})
+    }).then(d => d.json());
+
+    if (!r.ok) {
+      document.getElementById('studyStatus').textContent = '❌ ' + (r.error || '分析失败');
+      return;
+    }
+
+    lastAnalysis = r;
+    // 默认视角跟随实际执棋方（API current: 1=黑走, -1=白走）
+    viewColor = (r.current === -1) ? -1 : 1;
+    // 同步黑白按钮高亮到执棋方
+    document.getElementById('btnBlack').className = viewColor === 1 ? 'active-black' : '';
+    document.getElementById('btnWhite').className = viewColor === -1 ? 'active-white' : '';
+    drawBoard();
+    showResults(r);
+  } catch (e) {
+    document.getElementById('studyStatus').textContent = '❌ 网络错误';
+  } finally {
+    analyzing = false;
+    document.getElementById('thinking').classList.remove('show');
+    document.getElementById('btnThink').disabled = stones.length === 0;
+  }
+}
+
+// ── 显示结果 ──
+function showResults(r) {
+  // 视角以 viewColor 为准（⚫黑=黑视角, ⚪白=白视角）
+  const perspective = viewColor === 1 ? '黑方' : '白方';
+  // 胜率按视角翻转：黑视角=黑胜率, 白视角=白胜率(100-黑胜率)
+  const wr = r.black_win_rate != null
+    ? (viewColor === 1 ? r.black_win_rate : (100 - r.black_win_rate))
+    : null;
+  // Q 值按视角翻转符号（Q 是"当前执棋方视角"价值，黑视角=黑方有利为正）
+  const qFlip = (viewColor === 1 ? 1 : -1);
+  const qStr = q => (q * qFlip >= 0 ? '+' : '') + (q * qFlip).toFixed(3);
+
+  const pl = r.policy_top || [];
+  const mc = r.mcts_top || [];
+
+  // 网络推荐
+  if (pl.length > 0) {
+    const t = pl[0];
+    document.getElementById('recPolicy').innerHTML =
+      `<b>${LETTERS[t.c]}${BOARD_SIZE - t.r}</b> (${t.r},${t.c}) · 概率 <b>${(t.prob * 100).toFixed(1)}%</b>`;
+  } else {
+    document.getElementById('recPolicy').textContent = '无有效位置';
+  }
+  // 网络top-5列表
+  document.getElementById('recPolicyList').innerHTML =
+    pl.slice(0,5).map((m, i) =>
+      `${LETTERS[m.c]}${BOARD_SIZE - m.r} ${(m.prob * 100).toFixed(1)}%`
+    ).join(' ｜ ') || '';
+
+  // MCTS推荐
+  if (mc.length > 0) {
+    const t = mc[0];
+    document.getElementById('recMCTS').innerHTML =
+      `<b>${LETTERS[t.c]}${BOARD_SIZE - t.r}</b> (${t.r},${t.c}) · 模拟 <b>${t.visits}</b> 次 · Q=${qStr(t.q)}`;
+  } else {
+    document.getElementById('recMCTS').textContent = '无有效位置';
+  }
+  // MCTS top-5列表
+  document.getElementById('recMCTSList').innerHTML =
+    mc.slice(0,5).map((m, i) =>
+      `${LETTERS[m.c]}${BOARD_SIZE - m.r} ${m.visits}次 Q=${qStr(m.q)}`
+    ).join(' ｜ ') || '';
+
+  document.getElementById('studyStatus').textContent =
+    `✅ 分析完成 · ${perspective}视角 · ${viewColor === 1 ? '黑' : '白'}棋胜率 ${wr != null ? wr.toFixed(1) : '—'}% · ${mc[0]?.visits || 0}次模拟`;
+  document.getElementById('studyStatus').className = 'status ok';
+  document.getElementById('resultPanel').classList.add('show');
+}
+</script>
+</body>
+</html>

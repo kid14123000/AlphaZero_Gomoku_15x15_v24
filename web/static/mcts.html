@@ -1,0 +1,1337 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>🔍 MCTS 搜索过程可视化</title>
+<style>
+body{background:#0b1220;color:#e2e8f0;font-family:-apple-system,'PingFang SC',sans-serif;margin:0;padding:16px}
+nav{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+nav a{color:#7dd3fc;text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid #334155;border-radius:6px;background:#0f172a}
+nav a:hover{background:#1e293b}
+nav a.active{background:#1e293b;border-color:#7dd3fc;color:#e2e8f0}
+h1{font-size:19px;margin:4px 0}
+.sec{border:1px solid #334155;border-radius:10px;padding:14px;margin:12px 0;background:#0f172a}
+.sec-title{font-weight:bold;color:#f1f5f9;margin-bottom:10px;font-size:14px}
+.mono{font-family:Menlo,monospace}
+.progress{height:14px;background:#1e293b;border-radius:7px;border:1px solid #334155;overflow:hidden;margin:6px 0}
+.progress .fill{height:100%;background:linear-gradient(90deg,#f59e0b,#ef4444);width:0%;transition:width .2s}
+.sim-item{border-bottom:1px solid #1e293b;padding:5px 4px;font-size:12px;cursor:pointer}
+.sim-item:hover{background:#1e293b}
+.sim-item .chain{color:#94a3b8;font-size:11px}
+.leaf{color:#34d399}
+.node{color:#7dd3fc}
+.backup{color:#fbbf24}
+.term{color:#f87171}
+canvas{border-radius:4px}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin:2px;background:#334155;color:#e2e8f0}
+.topbar{height:10px;background:#1e293b;border-radius:5px;overflow:hidden;display:inline-block;vertical-align:middle}
+.best{color:#fbbf24;font-weight:bold}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard"><i>📊</i> 训练监控</a>
+  <a href="/network"><i>🧠</i> 网络前向</a>
+  <a href="/mcts" class="active"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution"><i>🧬</i> 开局演化</a>
+  <a href="/replay"><i>🗂</i> 自对弈数据</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+<h1>🔍 MCTS decide 搜索过程可视化</h1>
+<div style="color:#94a3b8;font-size:12px;margin:6px 0">
+decide 主循环: <span class="mono">while count[s].sum() &lt; sim_count: search(s)</span> → 每次 search 递归深入:
+局面→UCB选点→落子→翻转视角→新局面→...→叶子(首次遇到,网络predict出 pis和vs)→反向回溯更新挂起的 q/count
+</div>
+
+<!-- 摆谱板块 -->
+<div class="sec" style="border-color:#7c3aed">
+<div class="sec-title">🎨 摆谱: 自己摆局面 → 选权重 → 开始模拟</div>
+<div style="display:flex;gap:18px;flex-wrap:wrap">
+  <div>
+    <canvas id="setupCanvas" width="380" height="380" style="border:1px solid #334155;cursor:pointer;display:block;align-self:flex-start"></canvas>
+    <div style="font-size:11px;color:#64748b;margin-top:4px">点击棋盘放子 · 数字=落子顺序 · 当前: <b id="curColorLabel" style="color:#fbbf24">黑</b></div>
+    <!-- 🎯 候选点速览 (2026-09-13 用户要求): 摆谱棋盘正下方的空白区直接列出 MCTS 选点结果,
+         摆好局面跑完模拟无需下滑就能看到候选点 (原在「🎯 最终」板块的同一份列表已移到这里, 不重复展示) -->
+    <div id="candQuick" style="display:none;margin-top:8px;border:1px solid #334155;border-radius:8px;padding:8px;background:#0f172a;max-width:380px">
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:5px">🎯 候选点 (按访问次数) <span id="candQuickMeta" style="color:#64748b"></span></div>
+      <!-- 🌡 温度采样 (2026-09-13 用户要求): 调 τ 看实际对弈里温度怎么改选点 —— 纯前端, 不动搜索 -->
+      <div id="tempPanel" style="display:none;margin:0 0 6px;padding:5px 6px;border:1px dashed #475569;border-radius:6px;background:#0b1220">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11px">
+          <span style="color:#94a3b8">🌡 τ=<b id="tempShow" style="color:#fbbf24">—</b></span>
+          <span id="tempEntropy" style="color:#64748b"></span>
+          <button onclick="sampleMove(1)" style="background:#1e293b;color:#fbbf24;border:1px solid #b45309;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer" title="按当前 τ 的分布采样一次落子(等于实际对弈做到这一步时的那一手)">🎲 采样 1 次</button>
+          <button onclick="sampleMove(200)" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer" title="采样 200 次看这个 τ 下各候选点被选中的频率(温度对选点的统计影响)">🎲 ×200</button>
+          <button onclick="clearSamples()" style="background:#1e293b;color:#64748b;border:1px solid #475569;border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer">清采样</button>
+          <label style="color:#94a3b8;display:flex;align-items:center;gap:3px;cursor:pointer" title="把热力图换成 τ 调整后的分布(看点会不会因为温度变得'可选')"><input type="checkbox" id="tempHeat" onchange="drawTempHeat()"> 热力图按τ</label>
+        </div>
+        <div id="sampleOut" style="font-size:11px;color:#e2e8f0;margin-top:4px;line-height:1.6"></div>
+      </div>
+      <div id="topList" style="max-height:205px;overflow-y:auto;padding-right:2px"></div>
+      <div id="bestBox" style="font-size:12px;margin-top:6px"></div>
+    </div>
+  </div>
+  <div style="flex:1;min-width:260px">
+    <div style="margin:4px 0"><label style="font-size:12px">落子颜色:
+      <button onclick="setColor(1)" id="btnBlack" style="background:#111;color:#fff;border:2px solid #fbbf24;border-radius:6px;padding:5px 14px;cursor:pointer">● 黑</button>
+      <button onclick="setColor(-1)" id="btnWhite" style="background:#f8fafc;color:#111;border:2px solid #64748b;border-radius:6px;padding:5px 14px;cursor:pointer">○ 白</button>
+      <label style="font-size:11px;margin-left:8px;color:#94a3b8"><input type="checkbox" id="autoAlt" checked onchange="toggleAuto()"> 自动轮换黑白</label>
+    </label></div>
+    <div style="margin:4px 0">
+      <button onclick="undoStone()" style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:5px 16px;cursor:pointer">↩ 回退</button>
+      <button onclick="redoStone()" style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:5px 16px;cursor:pointer">↪ 前进</button>
+      <button onclick="clearStones()" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:6px;padding:5px 14px;cursor:pointer">🗑 清空</button>
+    </div>
+    <div style="margin:4px 0"><label style="font-size:12px">权重:
+      <select id="weightVer" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:80px"></select>
+      <select id="weightSelect" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:150px"></select>
+    </label></div>
+    <div style="margin:4px 0"><label style="font-size:12px">模拟次数:
+      <input id="simInput" type="number" value="40" min="5" max="5000" step="5"
+        style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:4px 8px;width:80px">
+    </label></div>
+    <div style="margin:8px 0">
+      <button onclick="load()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:8px 22px;font-size:14px;cursor:pointer">▶ 开始搜索模拟</button>
+      <button onclick="useGameBoard()" style="background:#1e293b;color:#7dd3fc;border:1px solid #475569;border-radius:8px;padding:8px 14px;cursor:pointer;margin-left:8px">📋 取当前对弈局面</button>
+    </div>
+    <div style="margin:6px 0;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex:1;min-width:240px">
+        <input id="posName" placeholder="局面名称" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;width:90px">
+        <input id="ansInput" placeholder="🎯推荐选点 F8,J10" title="出题: 你认为该局面正确的选点(逗号分隔, 按优先级)" style="background:#1e293b;color:#fbbf24;border:1px solid #b45309;border-radius:6px;padding:5px 8px;width:140px">
+        <input id="scoreInput" placeholder="🎯评分 0.8" title="当前玩家视角胜率(-1~1), 用于将来测value准确率" style="background:#1e293b;color:#34d399;border:1px solid #059669;border-radius:6px;padding:5px 8px;width:80px" type="number" min="-1" max="1" step="0.05">
+        <button onclick="savePosition()" style="background:#1e293b;color:#34d399;border:1px solid #475569;border-radius:6px;padding:5px 10px;cursor:pointer">💾 保存</button>
+        <select id="posSelect" onmousedown="this.value=''" onchange="loadPosition()" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:130px"></select>
+        <button onclick="loadPosition()" style="background:#1e293b;color:#fbbf24;border:1px solid #475569;border-radius:6px;padding:5px 10px;cursor:pointer">📥 加载</button>
+        <button onclick="deletePosition()" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:6px;padding:5px 10px;cursor:pointer">🗑</button>
+        <span id="posCount" style="font-size:11px;color:#64748b"></span>
+      </div>
+      <div style="flex:1;min-width:250px;border:1px solid #334155;border-radius:8px;padding:8px;background:#0f172a">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">⚙️ MCTS 参数 <span style="color:#64748b">(改后按新参数跑模拟)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 8px">
+          <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:3px">c_init<span title="UCB 探索常数基: 系数 = (c_init + ln((1+访问数)/c_base)) × √访问数/(1+本点访问数)。越大越鼓励探索访问少的点" style="color:#64748b;cursor:help;font-size:10px;border:1px solid #475569;border-radius:50%;width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">?</span>
+            <input id="pCinit" type="number" step="0.05" style="flex:1;min-width:0;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:3px 6px;font-size:11px"></label>
+          <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:3px">c_base<span title="探索常数缩放基数: 分母基数。某个点访问次数远超 c_base 后探索系数迅速衰减 → 后期更偏向利用(Q 高者胜)" style="color:#64748b;cursor:help;font-size:10px;border:1px solid #475569;border-radius:50%;width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">?</span>
+            <input id="pCbase" type="number" step="100" style="flex:1;min-width:0;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:3px 6px;font-size:11px"></label>
+          <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:3px">噪声占比<span title="prior_exploration_fraction: 先验 = (1-占比)×网络policy + 占比×Dirichlet噪声。0=纯网络先验(每次选点只看棋力), 1=纯噪声(完全随机探索)" style="color:#64748b;cursor:help;font-size:10px;border:1px solid #475569;border-radius:50%;width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">?</span>
+            <input id="pPexp" type="number" step="0.05" min="0" max="1" style="flex:1;min-width:0;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:3px 6px;font-size:11px"></label>
+          <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:3px">Dirichlet α<span title="噪声强度: 越小噪声越尖峰集中(偏向少数点=更随机冒险), 越大越均匀。训练用 0.03, 想观察纯网络行为可设噪声占比=0" style="color:#64748b;cursor:help;font-size:10px;border:1px solid #475569;border-radius:50%;width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">?</span>
+            <input id="pAlpha" type="number" step="0.01" min="0" style="flex:1;min-width:0;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:3px 6px;font-size:11px"></label>
+          <label style="font-size:11px;color:#fbbf24;display:flex;align-items:center;gap:3px">温度 τ<span title="温度采样: 落子从 visit 分布按 p ∝ prob^(1/τ) 采样(与训练 decide() 完全同口径)。τ→0 = 贪心(argmax, τ≤0.01 直接走 argmax); τ=1 = 按访问比例采样; τ>1 = 更平(更随机)。⚠️ 温度不改搜索, 只改'从搜索分布里挑哪一步' → 改完立即生效, 不用重跑模拟" style="color:#64748b;cursor:help;font-size:10px;border:1px solid #475569;border-radius:50%;width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">?</span>
+            <input id="pTemp" type="number" step="0.05" min="0" max="3" oninput="setTemp(this.value)" style="flex:1;min-width:0;background:#1e293b;color:#fbbf24;border:1px solid #b45309;border-radius:5px;padding:3px 6px;font-size:11px"></label>
+        </div>
+        <div style="display:flex;gap:5px;margin-top:5px;align-items:center;flex-wrap:wrap">
+          <input id="pTempRange" type="range" min="0" max="2" step="0.01" value="1" oninput="setTemp(this.value)"
+                 style="flex:1;min-width:100px;accent-color:#f59e0b" title="拖动即时看温度对选点的影响 (纯前端, 不重跑搜索)">
+          <button onclick="setTemp(0)" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:3px 7px;font-size:11px;cursor:pointer" title="τ≤0.01 = 贪心(argmax), 等于训练终局段行为">贪心</button>
+          <button onclick="setTemp(1)" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:3px 7px;font-size:11px;cursor:pointer" title="τ=1 按访问比例采样(训练开局段)">1.0</button>
+          <button onclick="setTemp(0.25)" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:3px 7px;font-size:11px;cursor:pointer">0.25</button>
+          <button onclick="setTemp(0.15)" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:3px 7px;font-size:11px;cursor:pointer" title="0.15 = 训练中盘平台值(v36 调度 step≥8)">0.15</button>
+          <label style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:3px;cursor:pointer" title="勾选后 τ 自动跟随 v36 训练调度: step0-3: 1.0→0.6, step4-7: 0.6→0.15, step≥8: 0.15 平台(按摆谱手数)"><input type="checkbox" id="tempFollow" checked onchange="onTempFollow()"> 跟随训练调度</label>
+        </div>
+        <div id="tempHint" style="font-size:11px;color:#64748b;margin-top:3px"></div>
+        <div style="display:flex;gap:5px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <input id="cfgName" placeholder="配置名" style="flex:1;min-width:50px;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:3px 6px;font-size:11px">
+          <button onclick="saveCfg()" style="background:#1e293b;color:#34d399;border:1px solid #475569;border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer">💾 存配置</button>
+          <select id="cfgSelect" onmousedown="this.value=''" onchange="loadCfg()" style="flex:1;min-width:60px;max-width:110px;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:3px 6px;font-size:11px"></select>
+          <button onclick="loadCfg()" style="background:#1e293b;color:#fbbf24;border:1px solid #475569;border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer">📥 加载</button>
+          <button onclick="deleteCfg()" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer">🗑</button>
+          <button onclick="setParams(MCTS_DEFAULTS)" title="恢复训练配方默认值 (1.25 / 19652 / 0.25 / 0.03)" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer">↺ 默认</button>
+        </div>
+      </div>
+    </div>
+    <div id="setupInfo" style="font-size:12px;color:#94a3b8;margin-top:6px">尚未摆子 · 将分析"轮到谁走"的局面</div>
+    <div style="margin-top:10px">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📜 落子次序 <span style="color:#64748b">(回退/清空自动刷新)</span></div>
+      <div id="setupHistory" style="max-height:110px;overflow-y:auto;font-size:12px;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;background:#0f172a;line-height:1.5"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div style="display:flex;gap:10px;align-items:center;margin:8px 0;flex-wrap:wrap">
+  <span id="meta" style="font-size:12px;color:#94a3b8"></span>
+</div>
+<div style="display:flex;gap:10px;align-items:flex-start;margin:8px 0;flex-wrap:wrap">
+  <div id="depthStats" style="flex:1;min-width:300px;font-size:12px;color:#e2e8f0;border:1px solid #334155;border-radius:8px;background:#0f172a;padding:8px 10px;display:none"></div>
+  <div id="routeRank" style="flex:1.3;min-width:340px;font-size:12px;color:#e2e8f0;border:1px solid #334155;border-radius:8px;background:#0f172a;padding:8px 10px;display:none;max-height:420px;overflow-y:auto"></div>
+</div>
+
+<div class="sec">
+<div class="sec-title">🔍 点探索查询 (输入坐标 → 该点在 MCTS 搜索中被探索的次数 / 每次路径 / 叶子 value)</div>
+<div style="display:flex;gap:8px;margin-bottom:4px;flex-wrap:wrap;align-items:center">
+  <input id="ptQuery" placeholder="如 F8 / L11>H7>G6 路径" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;width:130px">
+  <button onclick="queryPoint()" style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer">查询</button>
+  <span style="font-size:11px;color:#64748b">格式: 字母=列(A-O)+数字=行(1-15) 如 F8；或 行,列 数字格式。模拟完即可查询</span>
+</div>
+<div id="ptResult" style="font-size:12px;color:#e2e8f0;max-height:480px;overflow:auto"></div>
+</div>
+
+<div class="sec">
+<div class="sec-title">🎯 最终: prob = count[s] / count[s].sum() = 局面选点概率 (MCTS 候选点) <span id="finalWeight" style="font-weight:400;font-size:12px;color:#fbbf24"></span></div>
+<div style="display:flex;gap:20px;flex-wrap:wrap">
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">访问次数分布 (热力图)</div>
+    <canvas id="probCanvas" width="210" height="210" style="border:1px solid #334155"></canvas>
+    <div style="margin-top:6px;font-size:11px;color:#64748b">🎬 模拟轨迹重放 (拖动滑杆 → 某次模拟的选点路径画在棋盘上, 橙色连线+序号=每层 UCB 选点)</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-top:3px">
+      <span id="replayLabel" style="font-size:11px;color:#fbbf24;min-width:130px;white-space:nowrap">第 1 次模拟</span>
+      <input type="range" id="simReplay" min="1" max="1" value="1" oninput="renderReplay()" style="flex:1;min-width:80px;accent-color:#f59e0b;cursor:pointer">
+    </div>
+  </div>
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">网络 policy 输出 (先验 · 同规格)</div>
+    <canvas id="polCanvas" width="210" height="210" style="border:1px solid #334155"></canvas>
+    <div id="polDev" style="margin-top:6px;font-size:11px;line-height:1.7;color:#94a3b8;max-width:210px"></div>
+  </div>
+  <div style="flex:1;min-width:220px;font-size:11px;color:#64748b;line-height:1.8">
+    🎯 候选点 (按访问次数) 列表已移到上方「摆谱棋盘」正下方 —— 摆好局面跑完模拟即可直接看到选点，无需下滑。<br>
+    本板块保留 <b style="color:#94a3b8">访问次数热力图</b>（210×210 全盘分布）与 <b style="color:#94a3b8">模拟轨迹重放</b>。
+  </div>
+</div>
+</div>
+
+<div class="sec">
+<div class="sec-title">📈 count[s].sum() 增长 (模拟次数消耗 → 耗尽时 search 循环结束)</div>
+<div class="progress"><div class="fill" id="progressFill"></div></div>
+<div style="font-size:11px;color:#64748b" id="progressLabel"></div>
+</div>
+
+<div class="sec">
+<div class="sec-title">🔎 模拟循环区间回放 (拖动左右两个滑块选模拟区间, 区间内每次 search 的递归路径全部展示)</div>
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+  <span style="font-size:12px;color:#94a3b8;white-space:nowrap">起始</span>
+  <input type="range" id="simMin" min="1" max="1" value="1" oninput="renderSimRange()" style="flex:1;min-width:120px;accent-color:#7c3aed;cursor:pointer">
+  <span id="simRangeLabel" style="font-size:13px;color:#7dd3fc;min-width:110px;text-align:center;white-space:nowrap">模拟 1 ～ 1</span>
+  <input type="range" id="simMax" min="1" max="1" value="1" oninput="renderSimRange()" style="flex:1;min-width:120px;accent-color:#7c3aed;cursor:pointer">
+  <span style="font-size:12px;color:#94a3b8;white-space:nowrap">结束</span>
+</div>
+<div style="font-size:11px;color:#64748b;margin-bottom:6px" id="simSelMeta">共 1 次模拟</div>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+  <label style="font-size:12px;color:#e2e8f0;display:flex;align-items:center;gap:4px;cursor:pointer">
+    <input type="checkbox" id="simTermOnly" onchange="renderSimRange()" style="accent-color:#7c3aed">
+    🏁 只看抵达终局的模拟
+  </label>
+  <span style="font-size:11px;color:#64748b" id="simTermStat"></span>
+</div>
+<div id="simList" style="max-height:480px;overflow:auto"></div>
+</div>
+
+
+<script>
+const API = '';
+// ── 摆谱状态 (复用摆谱研究页逻辑: 坐标/自动轮换/回退) ──
+const LETTERS = 'ABCDEFGHIJKLMNO';
+const SZ = 380;
+const SP = 24;                      // 棋盘内边距
+const SC = (SZ - SP * 2) / 14;     // 格子大小
+let myStones = [];
+let redoStack = [];   // 前进(redo)栈 (2026-08-28)                  // {r, c, v, n} 按落子顺序
+let curColor = 1;
+
+function drawSetupBoard(keepCand) {
+  // 局面被改动 (落子/回退/前进/清空/取对弈局面/加载局面) → 上一次的候选点速览作废,
+  // 与棋盘上的 TOP6 标注一样"自然消失" (2026-09-13)
+  // keepCand=true: 仅因重绘调用的场合(如重新采样后重画棋盘) → 保留面板
+  const _cqHide = document.getElementById('candQuick');
+  if (!keepCand) {
+    if (_cqHide) _cqHide.style.display = 'none';
+    SAMPLE_TALLY = {}; LAST_SAMPLE = null;   // 局面变了 → 温度采样统计作废
+  } else if (_cqHide && (window._top || []).length) {
+    _cqHide.style.display = 'block';
+  }
+  const cv = document.getElementById('setupCanvas');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, SZ, SZ);
+  // 背景
+  const grad = ctx.createLinearGradient(0, 0, SZ, SZ);
+  grad.addColorStop(0, '#dcb35c'); grad.addColorStop(.5, '#c8a04c'); grad.addColorStop(1, '#dcb35c');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, SZ, SZ);
+  // 网格
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = 1.2;
+  for (let i = 0; i < 15; i++) {
+    const p = SP + i * SC;
+    ctx.beginPath(); ctx.moveTo(SP, p); ctx.lineTo(SP + 14 * SC, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, SP); ctx.lineTo(p, SP + 14 * SC); ctx.stroke();
+  }
+  ctx.lineWidth = 2; ctx.strokeRect(SP, SP, 14 * SC, 14 * SC);
+  // 星位
+  ctx.fillStyle = '#3a2818';
+  [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]].forEach(([r,c]) => {
+    const x = SP + c * SC, y = SP + r * SC;
+    ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
+  });
+  // 坐标
+  ctx.fillStyle = '#5a3820'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = SP + i * SC;
+    ctx.fillText(LETTERS[i], p, SP - 11); ctx.fillText(LETTERS[i], p, SZ - SP + 11);
+    ctx.fillText(15 - i, SP - 11, p); ctx.fillText(15 - i, SZ - SP + 11, p);
+  }
+  // 棋子 (带落子序号)
+  for (const s of myStones) {
+    const x = SP + s.c * SC, y = SP + s.r * SC;
+    const rad = SC * .43;
+    const isB = s.v === 1;
+    ctx.beginPath(); ctx.arc(x + 2, y + 2, rad, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fill();
+    const g = ctx.createRadialGradient(x - rad*.3, y - rad*.3, rad*.1, x, y, rad);
+    if (isB) { g.addColorStop(0,'#666'); g.addColorStop(.6,'#222'); g.addColorStop(1,'#000'); }
+    else { g.addColorStop(0,'#fff'); g.addColorStop(.6,'#eee'); g.addColorStop(1,'#bbb'); }
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = isB ? 0 : .5; ctx.strokeStyle = '#999'; ctx.stroke();
+    ctx.fillStyle = isB ? '#ccc' : '#333';
+    ctx.font = `bold ${SC * .32}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(s.n, x, y + 0.5);
+  }
+  const nb = myStones.filter(s => s.v === 1).length;
+  const nw = myStones.length - nb;
+  const toMove = nb === nw ? '黑' : '白';
+  document.getElementById('setupInfo').textContent =
+    `已摆 ${myStones.length} 子 (黑${nb}/白${nw}) · 轮到 ${toMove} 走 · 将分析该局面`;
+  // 落子次序 (实时记录, 回退/清空自动刷新)
+  document.getElementById('setupHistory').innerHTML = myStones.length === 0
+    ? '<span style="color:#64748b">尚无棋子</span>'
+    : myStones.map((s, i) =>
+        `<div style="display:flex;gap:6px;padding:1px 0"><span style="color:#64748b;min-width:20px">${i + 1}.</span>` +
+        `<span style="color:${s.v === 1 ? '#f8fafc' : '#38bdf8'}">${s.v === 1 ? '●' : '○'}</span>` +
+        `<span>${fmtCoord(s.r, s.c)}</span></div>`).join('');
+}
+
+function setupClick(e) {
+  const cv = document.getElementById('setupCanvas');
+  const rect = cv.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (SZ / rect.width);
+  const my = (e.clientY - rect.top) * (SZ / rect.height);
+  let minD = SC * .6, hitR = -1, hitC = -1;
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const d = Math.hypot(mx - (SP + c * SC), my - (SP + r * SC));
+    if (d < minD) { minD = d; hitR = r; hitC = c; }
+  }
+  if (hitR < 0) return;
+  if (myStones.some(s => s.r === hitR && s.c === hitC)) return;  // 已有子跳过
+  redoStack = [];   // 新落子作废前进历史
+  myStones.push({r: hitR, c: hitC, v: curColor, n: myStones.length + 1});
+  if (document.getElementById('autoAlt').checked) {
+    curColor = -curColor;
+    setColor(curColor);
+  }
+  drawSetupBoard();
+}
+
+function setColor(v) {
+  curColor = v;
+  document.getElementById('curColorLabel').textContent = v === 1 ? '黑' : '白';
+  document.getElementById('curColorLabel').style.color = v === 1 ? '#fbbf24' : '#38bdf8';
+  document.getElementById('btnBlack').style.borderColor = v === 1 ? '#fbbf24' : '#64748b';
+  document.getElementById('btnWhite').style.borderColor = v === -1 ? '#fbbf24' : '#64748b';
+}
+
+function toggleAuto() {
+  // 自动轮换开关变化时, 同步当前颜色到正确的下一步
+  const nb = myStones.filter(s => s.v === 1).length;
+  const nw = myStones.length - nb;
+  if (document.getElementById('autoAlt').checked) {
+    setColor(nb === nw ? 1 : -1);
+  }
+}
+
+function undoStone() {
+  if (myStones.length === 0) return;
+  redoStack.push(myStones.pop());   // 回退的步进 redo 栈, 可前进恢复
+  if (document.getElementById('autoAlt').checked) {
+    curColor = -curColor;
+    setColor(curColor);
+  }
+  drawSetupBoard();
+}
+
+
+function redoStone() {
+  if (!redoStack.length) return;
+  myStones.push(redoStack.pop());
+  if (document.getElementById('autoAlt').checked) {
+    curColor = -curColor;
+    setColor(curColor);
+  }
+  drawSetupBoard();
+}
+
+function clearStones() { myStones = []; redoStack = []; setColor(1); drawSetupBoard(); }
+
+// 模拟完成后在摆谱棋盘上叠加 AI 决策标注: TOP6 排名圈(深→浅) + best 金色★
+// 用户落子/撤销/清空/取对弈局面会触发 drawSetupBoard() 全量重绘 → 标注自然消失
+function drawSetupMarkers() {
+  const best = window._best, top = window._top || [];
+  if (!best && !top.length) return;
+  const cv = document.getElementById('setupCanvas');
+  const ctx = cv.getContext('2d');
+  const occupied = new Set(myStones.map(s => s.r * 15 + s.c));
+  const cands = top.filter(t => t.visits > 0 && !occupied.has(t.r * 15 + t.c)).slice(0, 6);
+  cands.forEach((t, i) => {
+    const isB = best && t.r === best.r && t.c === best.c;
+    const x = SP + t.c * SC, y = SP + t.r * SC;
+    if (!isB) {
+      const a = Math.max(0.28, 0.78 - i * 0.1);   // 第2名往后渐浅
+      ctx.beginPath(); ctx.arc(x, y, SC * 0.40, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(59,130,246,${a})`; ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  });
+  if (best) {
+    const x = SP + best.c * SC, y = SP + best.r * SC;
+    ctx.beginPath(); ctx.arc(x, y, SC * 0.47, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(251,191,36,.30)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(251,191,36,.95)'; ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, SC * 0.30, 0, Math.PI * 2);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(10, SC * 0.30)}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('★', x, y + 0.5);
+  }
+}
+
+function useGameBoard() {
+  fetch(API + '/api/state').then(r => r.json()).then(d => {
+    const st = d.state || {};
+    const arr = (st.stones || []).slice();
+    // 按落子顺序排序: stones 里 v 是实际颜色, 但顺序按落子 (move 历史)
+    myStones = arr.map((x, i) => ({r: x.r, c: x.c, v: x.v, n: i + 1})); redoStack = [];
+    const nb = myStones.filter(s => s.v === 1).length;
+    setColor(nb === myStones.length - nb ? 1 : -1);
+    drawSetupBoard();
+  });
+}
+
+function initWeights() {
+  fetch(API + '/api/weights').then(r => r.json()).then(d => {
+    const ws = (d.weights || []).filter(w => w.version !== 'v16');  // v16 是 9×9, 对弈页(15×15)不兼容
+    window._weights = ws;
+    const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+    const vers = [...new Set(ws.map(w => w.version))].sort();
+    const verSel = document.getElementById('weightVer');
+    verSel.innerHTML = vers.map(v => `<option value="${v}">${v}</option>`).join('');
+    verSel.value = (()=>{{const _pref=[d.active||'v39','v39','v38','v37','v36','v35','v34','v33','v32','v31','v29','v28','v27','v26','v25','v24','v23','v18','v16','v14','v12','v10'];return _pref.find(v=>vers.includes(v))||vers[0];}})();
+    const fillGen = () => {
+      const v = verSel.value;
+      const list = ws.filter(w => w.version === v).sort((a, b) => itNum(b.file) - itNum(a.file));
+      const sel = document.getElementById('weightSelect');
+      sel.innerHTML = list.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('');
+    };
+    fillGen();
+    verSel.onchange = fillGen;
+  });
+}
+function hotColor(t){
+  t = Math.max(0, Math.min(1, t));
+  const stops = [[0,8,0,0],[51,255,0,0],[102,255,85,0],[153,255,170,0],[204,255,255,128],[255,255,255,255]];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [p0,r0,g0,b0] = stops[i], [p1,r1,g1,b1] = stops[i+1];
+    if (t * 255 <= p1) {
+      const f = (t * 255 - p0) / (p1 - p0 || 1);
+      return `rgb(${Math.round(r0+(r1-r0)*f)},${Math.round(g0+(g1-g0)*f)},${Math.round(b0+(b1-b0)*f)})`;
+    }
+  }
+  return 'rgb(255,255,255)';
+}
+function fmtCoord(r, c) { return String.fromCharCode(65 + c) + (15 - r); }
+// ★ 2026-09-27 用户要: 看网络 policy 输出与 MCTS 实际算出来的偏离
+//   MSE = 均方差 (全盘 225 格逐格概率差的平方平均) —— 用户点名要看的指标
+//   policy 与 prob 同口径(都已按 valid 掩码 + 归一化) → 可直接逐格比 ✓
+function renderPolDev(dev, pol, prob) {
+  const el = document.getElementById('polDev');
+  if (!el) return;
+  if (!dev || !pol || !pol.length) {
+    el.innerHTML = '<span style="color:#94a3b8">（本次无 policy 数据）</span>';
+    return;
+  }
+  const col = dev.mse < 1e-5 ? '#4ade80' : (dev.mse < 1e-4 ? '#fbbf24' : '#f87171');
+  const nm = i => { const r = Math.floor(i / 15), c = i % 15; return String.fromCharCode(65 + c) + (15 - r); };
+  const diff = pol.map((v, i) => ({ i: i, dv: (prob[i] === undefined ? 0 : prob[i]) - v }))
+                  .filter(x => (prob[x.i] !== undefined));
+  const up = diff.slice().sort((a, b) => b.dv - a.dv).slice(0, 3);
+  const dn = diff.slice().sort((a, b) => a.dv - b.dv).slice(0, 3);
+  el.innerHTML =
+    '<div style="color:#e2e8f0;font-size:12px">偏离 = MCTS prob − 网络 policy</div>' +
+    '<div><b style="color:' + col + ';font-size:15px">MSE ' + dev.mse.toExponential(2) + '</b>' +
+      (dev.tv !== undefined ? ' <span style="font-size:12px;color:#fbbf24">TV ' + dev.tv.toFixed(3) + '</span>' : '') +
+    '</div>' +
+    (dev.tv !== undefined ? '<div style="font-size:11px;color:#94a3b8">TV = 搜索挪走的概率质量(0.5·Σ|Δ|), 比 MSE 直观</div>' : '') +
+    '<div>RMSE ' + dev.rmse.toExponential(2) + ' · MAE ' + dev.mae.toExponential(2) + '</div>' +
+    '<div>max|Δ| ' + dev.max_abs.toExponential(2) + ' · cos ' + dev.cos + '</div>' +
+    '<div>KL(pol‖mcts) ' + dev.kl_pol_to_mcts + ' · 有效点 ' + dev.n_valid + '</div>' +
+    '<div>top1 一致: <b style="color:' + (dev.argmax_same ? '#4ade80' : '#f87171') + '">' +
+      (dev.argmax_same ? '是' : '否') + '</b></div>' +
+    '<div style="margin-top:4px">MCTS 加权更多: ' + up.map(x => nm(x.i) + ' +' + x.dv.toFixed(4)).join(' · ') + '</div>' +
+    '<div>MCTS 加权更少: ' + dn.map(x => nm(x.i) + ' ' + x.dv.toFixed(4)).join(' · ') + '</div>';
+}
+
+function drawProb(cv, data, stones, best, top) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width;
+  const pad = 18, cell = (W - pad * 2) / 14;
+  ctx.clearRect(0, 0, W, W);
+  // 热力图 (越亮=访问越多)
+  let mx = Math.max(...data);
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    ctx.fillStyle = hotColor(data[r*15+c] / (mx || 1));
+    ctx.fillRect(pad + c * cell, pad + r * cell, cell, cell);
+  }
+  // 网格
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 14; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14 * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14 * cell); ctx.stroke();
+  }
+  // 坐标 (标在格子中心, 与格子一一对应)
+  ctx.fillStyle = '#94a3b8'; ctx.font = Math.max(9, Math.round(W * 0.035)) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell + cell / 2;
+    ctx.fillText(LETTERS[i], p, 7); ctx.fillText(LETTERS[i], p, W - 7);
+    ctx.fillText(15 - i, 7, p); ctx.fillText(15 - i, W - 7, p);
+  }
+  // 棋子
+  stones.forEach(s => {
+    const x = pad + s.c * cell, y = pad + s.r * cell;
+    ctx.beginPath();
+    ctx.arc(x + cell/2, y + cell/2, cell * 0.36, 0, Math.PI * 2);
+    ctx.fillStyle = s.v === 1 ? '#111' : '#f8fafc';
+    ctx.fill();
+    ctx.strokeStyle = s.v === 1 ? '#fff' : '#111'; ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+  // 决策标注: 候选点排名圈 (第1名最深, 往后渐浅; best 金色高亮 + 白心)
+  const cands = (top || []).filter(t => t.visits > 0).slice(0, 6);
+  cands.forEach((t, i) => {
+    const x = pad + t.c * cell + cell / 2, y = pad + t.r * cell + cell / 2;
+    const isB = best && t.r === best.r && t.c === best.c;
+    const a = isB ? 0.92 : Math.max(0.18, 0.72 - i * 0.12);   // 第2名0.60 第3名0.48...
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.40, 0, Math.PI * 2);
+    ctx.fillStyle = isB ? `rgba(251,191,36,${a})` : `rgba(59,130,246,${a})`;
+    ctx.fill();
+    ctx.strokeStyle = isB ? '#fff' : 'rgba(255,255,255,.55)'; ctx.lineWidth = isB ? 1.8 : 0.9;
+    ctx.stroke();
+  });
+  if (best) {
+    const x = pad + best.c * cell + cell / 2, y = pad + best.r * cell + cell / 2;
+    ctx.beginPath(); ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+  }
+}
+function fmtPath(path) {
+  let s = '';
+  for (const p of path) {
+    if (p.type === 'node') s += `<span class="node">选${fmtCoord(p.action[0], p.action[1])}</span> → `;
+    else if (p.type === 'leaf') s += `<span class="leaf">🌿叶子 predict v=${p.v >= 0 ? '+' : ''}${p.v}</span> → `;
+    else if (p.type === 'terminal') s += `<span class="term">🏁终局 winner=${p.winner}</span> → `;
+    else if (p.type === 'backup') s += `<span class="backup">↩回溯 count=${p.count} q=${p.q >= 0 ? '+' : ''}${p.q}</span> → `;
+  }
+  return s.replace(/ → $/, '');
+}
+// 前向选择详细 (node/leaf/terminal 按序)
+function fmtForward(path) {
+  let s = '';
+  for (const p of path) {
+    if (p.type === 'node') {
+      s += `<div style="margin:2px 0"><span style="color:#64748b">d${p.depth}</span> ` +
+        `<span class="node">UCB 选 ${fmtCoord(p.action[0], p.action[1])}</span> ` +
+        `<span style="color:#64748b">[ub=${p.ub}]</span> → 落子 → 翻转视角</div>`;
+    } else if (p.type === 'leaf') {
+      s += `<div style="margin:2px 0"><span style="color:#64748b">d${p.depth}</span> ` +
+        `<span class="leaf">🌿 叶子: 首次遇到该局面 → 网络 predict 出 pis/vs</span> → ` +
+        `<span class="leaf">v=${p.v >= 0 ? '+' : ''}${p.v}</span> <span style="color:#64748b">(本次 search 在此结束)</span></div>`;
+    } else if (p.type === 'terminal') {
+      s += `<div style="margin:2px 0"><span style="color:#64748b">d${p.depth}</span> ` +
+        `<span class="term">🏁 终局 winner=${p.winner}</span></div>`;
+    }
+  }
+  return s;
+}
+// 后向更新详细 (backup 顺序 = 回溯顺序, 从深到浅)
+function fmtBackup(path) {
+  let s = '';
+  for (const p of path) {
+    if (p.type === 'backup') {
+      s += `<div style="margin:2px 0"><span style="color:#64748b">d${p.node_depth}</span> ` +
+        `<span class="backup">↩ 更新(${fmtCoord(p.action[0], p.action[1])}):</span> ` +
+        `v=${p.v >= 0 ? '+' : ''}${p.v} → <b>count=${p.count}</b> <b>q=${p.q >= 0 ? '+' : ''}${p.q}</b></div>`;
+    }
+  }
+  return s;
+}
+
+// ── 模拟循环区间回放 (双滑块: 起始~结束) ──
+function simItemHTML(st, full) {
+  const chain = fmtPath(st.path);
+  if (!full) {
+    return `<div class="sim-item" style="margin:3px 0"><span style="color:#64748b">模拟${st.sim}</span> ` +
+      `[count=${st.count_sum}] <span class="chain">${chain}</span></div>`;
+  }
+  const detail = `<div class="sim-detail" style="margin:6px 0 6px 10px;padding-left:10px;border-left:2px solid #334155">` +
+    `<div style="font-size:11px;color:#7dd3fc;font-weight:bold;margin-bottom:4px">⬇️ 前向选择 (局面→UCB选点→落子→翻转视角→...→叶子predict)</div>` +
+    fmtForward(st.path) +
+    `<div style="font-size:11px;color:#fbbf24;font-weight:bold;margin:8px 0 4px">⬆️ 后向更新 (叶子 v 反向传播, 更新挂起局面的 q/count)</div>` +
+    fmtBackup(st.path) + `</div>`;
+  return `<div class="sim-item" style="margin:6px 0"><span style="color:#64748b">模拟${st.sim}</span> [count=${st.count_sum}]` +
+    `<span style="color:#475569;font-size:10px"> 完整递归路径</span><br><span class="chain">${chain}</span>${detail}</div>`;
+}
+function renderSimRange() {
+  const minEl = document.getElementById('simMin');
+  const maxEl = document.getElementById('simMax');
+  let min = parseInt(minEl.value), max = parseInt(maxEl.value);
+  // 互锁: min 不能超过 max
+  if (min > max) { min = max; minEl.value = max; }
+  if (max < min) { max = min; maxEl.value = min; }
+  document.getElementById('simRangeLabel').textContent = `模拟 ${min} ～ ${max}`;
+  let list = (window._steps || []).filter(st => st.sim >= min && st.sim <= max);
+  // 🏁 终局筛选: 只看该次 search 抵达真实五连终局(path 含 terminal 节点)的模拟
+  const termOnly = document.getElementById('simTermOnly').checked;
+  const hasTerm = st => (st.path || []).some(p => p.type === 'terminal');
+  // 终局统计(全区间, 不受滑块影响)
+  const allTerm = (window._steps || []).filter(hasTerm);
+  const statEl = document.getElementById('simTermStat');
+  if (statEl) {
+    const tWin = {}, tDepth = [];
+    for (const st of allTerm) {
+      const termNode = st.path.find(p => p.type === 'terminal');
+      if (termNode) {
+        const w = termNode.winner;
+        tWin[w] = (tWin[w] || 0) + 1;
+        tDepth.push(termNode.depth || 0);
+      }
+    }
+    const nTot = (window._steps || []).length;
+    const avgD = tDepth.length ? (tDepth.reduce((a, b) => a + b, 0) / tDepth.length).toFixed(1) : '-';
+    statEl.innerHTML = `终局模拟: <b>${allTerm.length}</b>/${nTot} (${nTot ? (100 * allTerm.length / nTot).toFixed(1) : 0}%)` +
+      ` · 均深 d${avgD}` +
+      ` · winner分布: ${Object.entries(tWin).map(([w, n]) => `${w === '1' ? '黑' : w === '-1' ? '白' : w}(+${w})×${n}`).join(' ')}`;
+  }
+  if (termOnly) {
+    list = list.filter(hasTerm);
+  }
+  const full = list.length <= 40;
+  document.getElementById('simSelMeta').textContent =
+    `共 ${list.length} 次模拟` + (full ? '' : ' · 区间过大(>40), 显示摘要链, 缩小范围看完整路径');
+  document.getElementById('simList').innerHTML = list.map(st => simItemHTML(st, full)).join('');
+}
+
+// ── 🔍 点探索查询: 输入坐标 → 该点被探索次数 / 每次路径 / 叶子 value ──
+function parseCoord(s) {
+  s = (s || '').trim().toUpperCase();
+  if (!s) return null;
+  let m = s.match(/^([A-O])([1-9]|1[0-5])$/);        // F8 → [7, 5]
+  if (m) return [15 - parseInt(m[2]), m[1].charCodeAt(0) - 65];
+  m = s.match(/^([1-9]|1[0-5])[, -]+([1-9]|1[0-5])$/); // 8,6 或 8-6 (1基)
+  if (m) return [parseInt(m[1]) - 1, parseInt(m[2]) - 1];
+  return null;
+}
+function queryPoint() {
+  const raw = document.getElementById('ptQuery').value;
+  // 🔗 路径查询: 输入含 '>' 分隔符 → 按路线序列匹配 (如 L11>H7>G6>H8>H10>K8)
+  if (raw.includes('>')) { queryPath(raw); return; }
+  const rc = parseCoord(raw);
+  const res = document.getElementById('ptResult');
+  if (!rc) { res.innerHTML = '<span style="color:#f87171">坐标格式不对: 如 F8 (字母=列, 数字=行) 或 8,6 (行,列 1基) 或 L11>H7>G6 (路径序列)</span>'; return; }
+  const [r, c] = rc;
+  const steps = window._steps || [];
+  const hits = [];   // {sim, depth, leaf, prefix, full}
+  let rootCount = 0;
+  for (const st of steps) {
+    const path = st.path || [];
+    const nodes = path.filter(q => q.type === 'node');
+    path.forEach((p, i) => {
+      if (p.type === 'node' && p.action[0] === r && p.action[1] === c) {
+        const leaf = path.find(q => q.type === 'leaf' || q.type === 'terminal');
+        const idxInNodes = nodes.indexOf(p);
+        hits.push({sim: st.sim, depth: p.depth, leaf, prefix: nodes.slice(0, idxInNodes + 1)});
+        if (p.depth === 0) rootCount++;
+      }
+    });
+  }
+  // 摘要
+  const vs = hits.filter(h => h.leaf && h.leaf.type === 'leaf').map(h => h.leaf.v);
+  let head = `<div style="margin:6px 0"><b style="color:#fbbf24">${fmtCoord(r, c)}</b> 被探索 <b>${hits.length}</b> 次` +
+    ` (根层直接 ${rootCount} 次 · 全深度 ${hits.length} 次)`;
+  if (vs.length) {
+    const mn = Math.min(...vs), mx = Math.max(...vs), mean = vs.reduce((a, b) => a + b, 0) / vs.length;
+    head += ` · 叶子 v: min=${mn >= 0 ? '+' : ''}${mn.toFixed(3)} mean=${mean >= 0 ? '+' : ''}${mean.toFixed(3)} max=${mx >= 0 ? '+' : ''}${mx.toFixed(3)}`;
+  }
+  head += `</div>`;
+  if (!hits.length) {
+    res.innerHTML = head + '<div style="color:#64748b">该点在 MCTS 搜索中从未被探索 (增加模拟次数或该点先验过低)</div>';
+    return;
+  }
+  const MAX_SHOW = 60;
+  const list = hits.slice(0, MAX_SHOW).map((h, i) => {
+    const leafTxt = h.leaf ? (h.leaf.type === 'leaf' ? `🌿 叶子 v=${h.leaf.v >= 0 ? '+' : ''}${h.leaf.v}` : `🏁 终局 winner=${h.leaf.winner}`) : '';
+    return `<div class="sim-item" style="margin:4px 0;padding:3px 0;border-bottom:1px dashed #1e293b">` +
+      `<span style="color:#64748b">#${i + 1} 模拟${h.sim} · d${h.depth}层</span> ${leafTxt} ` +
+      `<span style="color:#7dd3fc;cursor:pointer;text-decoration:underline" onclick="replaySim(${h.sim})">🎬 回放</span><br>` +
+      `<span class="chain" style="font-size:11px">${fmtPath(h.prefix)}</span></div>`;
+  }).join('');
+  res.innerHTML = head +
+    (hits.length > MAX_SHOW ? `<div style="color:#64748b;margin:4px 0">仅显示前 ${MAX_SHOW} 条 (共 ${hits.length} 条探索记录)</div>` : '') + list;
+}
+// 联动: 把模拟回放滑杆指到某次模拟并画轨迹
+function replaySim(n) {
+  const el = document.getElementById('simReplay');
+  el.max = Math.max(parseInt(el.max) || 1, n);
+  el.value = n;
+  renderReplay();
+}
+
+// ── 🔗 路径查询: 输入路线序列 (如 L11>H7>G6>H8>H10>K8) → 该路线被搜索到的次数/每次叶子value ──
+function parseCoordSeq(s) {
+  const parts = s.split('>').map(x => x.trim()).filter(Boolean);
+  const seq = [];
+  for (const pt of parts) {
+    const rc = parseCoord(pt);
+    if (!rc) return null;
+    seq.push(rc);
+  }
+  return seq.length >= 2 ? seq : null;
+}
+function queryPath(raw) {
+  const res = document.getElementById('ptResult');
+  const seq = parseCoordSeq(raw);
+  if (!seq) { res.innerHTML = '<span style="color:#f87171">路径格式: 用 > 分隔坐标, 如 L11>H7>G6 (至少2步)</span>'; return; }
+  const seqStr = seq.map(rc => fmtCoord(rc[0], rc[1])).join(' → ');
+  const steps = window._steps || [];
+  const hits = [];   // {sim, startDepth, nodes(从匹配起点), leaf}
+  for (const st of steps) {
+    const path = st.path || [];
+    const nodes = path.filter(q => q.type === 'node');
+    const acts = nodes.map(n => [n.action[0], n.action[1]]);
+    // 滑动窗口: 找连续匹配 (任意起点)
+    for (let i = 0; i + seq.length <= acts.length; i++) {
+      let match = true;
+      for (let j = 0; j < seq.length; j++) {
+        if (acts[i + j][0] !== seq[j][0] || acts[i + j][1] !== seq[j][1]) { match = false; break; }
+      }
+      if (match) {
+        const leaf = path.find(q => q.type === 'leaf' || q.type === 'terminal');
+        hits.push({sim: st.sim, startDepth: nodes[i].depth, nodes: nodes.slice(i, i + seq.length), leaf});
+        break;  // 一次模拟只记一次 (最早匹配)
+      }
+    }
+  }
+  let head = `<div style="margin:6px 0">🔗 路线 <b style="color:#fbbf24">${seqStr}</b> 被探索 <b>${hits.length}</b> 次 / ${steps.length} 模拟`;
+  const vs = hits.filter(h => h.leaf && h.leaf.type === 'leaf').map(h => h.leaf.v);
+  if (vs.length) {
+    const mn = Math.min(...vs), mx = Math.max(...vs), mean = vs.reduce((a, b) => a + b, 0) / vs.length;
+    head += ` · 叶子 v: min=${mn >= 0 ? '+' : ''}${mn.toFixed(3)} mean=${mean >= 0 ? '+' : ''}${mean.toFixed(3)} max=${mx >= 0 ? '+' : ''}${mx.toFixed(3)}`;
+  }
+  head += `</div>`;
+  if (!hits.length) {
+    res.innerHTML = head + '<div style="color:#64748b">该路线在 MCTS 搜索中从未被完整探索 (增加模拟次数或中间点先验过低)</div>';
+    return;
+  }
+  const MAX_SHOW = 60;
+  const list = hits.slice(0, MAX_SHOW).map((h, i) => {
+    const leafTxt = h.leaf ? (h.leaf.type === 'leaf' ? `🌿 叶子 v=${h.leaf.v >= 0 ? '+' : ''}${h.leaf.v}` : `🏁 终局 winner=${h.leaf.winner}`) : '';
+    return `<div class="sim-item" style="margin:4px 0;padding:3px 0;border-bottom:1px dashed #1e293b">` +
+      `<span style="color:#64748b">#${i + 1} 模拟${h.sim} · 起点d${h.startDepth}层</span> ${leafTxt} ` +
+      `<span style="color:#7dd3fc;cursor:pointer;text-decoration:underline" onclick="replaySim(${h.sim})">🎬 回放</span><br>` +
+      `<span class="chain" style="font-size:11px">${fmtPath(h.nodes.map(n => ({type:'node', action:n.action})))}</span></div>`;
+  }).join('');
+  res.innerHTML = head +
+    (hits.length > MAX_SHOW ? `<div style="color:#64748b;margin:4px 0">仅显示前 ${MAX_SHOW} 条 (共 ${hits.length} 条)</div>` : '') + list;
+}
+
+// ── 🎬 模拟轨迹重放: 滑杆选某次模拟 → 把该次 path 的选点序列画到棋盘 ──
+function renderReplay() {
+  const el = document.getElementById('simReplay');
+  const sim = parseInt(el.value) || 1;
+  const steps = window._steps || [];
+  const st = steps[sim - 1];
+  const label = document.getElementById('replayLabel');
+  if (!st) { label.textContent = '无数据'; return; }
+  const path = st.path || [];
+  const nodes = path.filter(p => p.type === 'node');
+  const leaf = path.find(p => p.type === 'leaf' || p.type === 'terminal');
+  let info = `第 ${sim} 次模拟 · ${nodes.length} 层`;
+  if (leaf) {
+    info += leaf.type === 'leaf' ? ` · 叶子 v=${leaf.v >= 0 ? '+' : ''}${leaf.v}` : ` · 终局 winner=${leaf.winner}`;
+  }
+  label.textContent = info;
+  drawTrace(nodes, window._replayStones || [], leaf);
+}
+
+function drawTrace(nodes, stones, leaf) {
+  const cv = document.getElementById('probCanvas');
+  const ctx = cv.getContext('2d');
+  const W = cv.width;
+  const pad = 18, cell = (W - pad * 2) / 14;
+  ctx.clearRect(0, 0, W, W);
+  // 底图: 网格 + 坐标 + 棋子
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 14; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14 * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14 * cell); ctx.stroke();
+  }
+  ctx.fillStyle = '#94a3b8'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell + cell / 2;
+    ctx.fillText(LETTERS[i], p, 7); ctx.fillText(LETTERS[i], p, W - 7);
+    ctx.fillText(15 - i, 7, p); ctx.fillText(15 - i, W - 7, p);
+  }
+  stones.forEach(s => {
+    const x = pad + s.c * cell + cell / 2, y = pad + s.r * cell + cell / 2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.36, 0, Math.PI * 2);
+    ctx.fillStyle = s.v === 1 ? '#111' : '#f8fafc'; ctx.fill();
+    ctx.strokeStyle = s.v === 1 ? '#fff' : '#111'; ctx.lineWidth = 1; ctx.stroke();
+  });
+  if (!nodes.length) return;
+  const pts = nodes.map(n => [pad + n.action[1] * cell + cell / 2, pad + n.action[0] * cell + cell / 2]);
+  // 连线 (根→叶)
+  ctx.strokeStyle = 'rgba(245,158,11,.75)'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((p, i) => { if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]); });
+  ctx.stroke();
+  // 序号圈 (颜色渐变)
+  pts.forEach((p, i) => {
+    const hue = 35 + i * 16;
+    ctx.beginPath(); ctx.arc(p[0], p[1], cell * 0.32, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${hue},80%,55%,.88)`; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(8, cell * 0.26)}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(i + 1), p[0], p[1] + 0.5);
+  });
+  // 叶子标记
+  if (leaf && pts.length) {
+    const lp = pts[pts.length - 1];
+    ctx.beginPath(); ctx.arc(lp[0], lp[1], cell * 0.42, 0, Math.PI * 2);
+    ctx.strokeStyle = leaf.type === 'terminal' ? '#f87171' : '#4ade80';
+    ctx.lineWidth = 2; ctx.stroke();
+  }
+  // 最终决策参照: 候选点排名圈 (深→浅) + best 金色高亮 (与热力图模式一致, 回放时不丢标注)
+  const cands = (window._top || []).filter(t => t.visits > 0).slice(0, 6);
+  cands.forEach((t, i) => {
+    const isB = window._best && t.r === window._best.r && t.c === window._best.c;
+    const x = pad + t.c * cell + cell / 2, y = pad + t.r * cell + cell / 2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.40, 0, Math.PI * 2);
+    ctx.strokeStyle = isB ? 'rgba(251,191,36,.95)' : `rgba(59,130,246,${Math.max(.25, .75 - i * .1)})`;
+    ctx.lineWidth = isB ? 2.2 : 1.1;
+    ctx.stroke();
+    if (isB) {
+      ctx.fillStyle = 'rgba(251,191,36,.35)'; ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(7, cell * 0.24)}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('★', x, y + 0.5);
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 🌡 温度采样 (2026-09-13 用户要求: 调 τ 模拟实际对弈中温度对选点的影响)
+//   口径与训练 decide() 完全一致: p ∝ prob^(1/τ); τ≤1e-2 → argmax(贪心)
+//   ⚠️ 温度【不影响搜索】—— MCTS 的 count/UCB 由搜索决定, 温度只决定"从访问分布里挑哪一步",
+//      所以改 τ 是纯前端重算, 不必重跑模拟 (训练里也是 search 完成后才采样)
+// ══════════════════════════════════════════════════════════════════
+let TAU = 1.0;              // 当前温度
+let TAU_FOLLOW = true;      // 是否跟随 v36 训练调度(按摆谱手数)
+let SAMPLE_TALLY = {};      // {index: 次数} 累计采样统计
+let LAST_SAMPLE = null;     // {r, c} 最近一次采样点
+
+// v36 训练温度调度, 逐行对照 Gomoku-v0_pt_v36.py self_play():
+//   step0-3: 1.0→0.6 | step4-7: 0.6→0.15 | step≥8: 0.15 平台
+// (四舍五入到 2 位: 0.6-0.45 这类减法的浮点误差会显示成 0.149999999999998)
+function trainTemp(step) {
+  let t;
+  if (step <= 3) t = 1.0 - 0.4 * step / 3.0;
+  else if (step <= 7) t = 0.6 - 0.45 * (step - 3) / 4.0;
+  else t = 0.15;
+  return Math.round(t * 100) / 100;
+}
+function boardStep() { return myStones.length; }     // 摆谱手数 = 轮到的那一步
+
+function syncTempInputs() {
+  const nb = document.getElementById('pTemp');
+  if (nb) nb.value = (TAU <= 0.01 ? 0 : Number(TAU.toFixed(2)));
+  const rg = document.getElementById('pTempRange');
+  if (rg) rg.value = Math.min(2, TAU);
+}
+
+function setTemp(v) {
+  const x = parseFloat(v);
+  TAU = isNaN(x) ? 1.0 : Math.max(0, Math.min(3, x));
+  syncTempInputs();
+  try { localStorage.setItem('mcts_tau', String(TAU)); } catch (e) {}
+  renderTopList();     // 立即重算候选点 τ 概率
+  drawTempHeat();      // 热力图(若勾选按τ)
+}
+
+function onTempFollow(init) {
+  const cb = document.getElementById('tempFollow');
+  TAU_FOLLOW = cb ? cb.checked : true;
+  try { localStorage.setItem('mcts_tau_follow', TAU_FOLLOW ? '1' : '0'); } catch (e) {}
+  const dis = TAU_FOLLOW;
+  const nb = document.getElementById('pTemp'); if (nb) nb.disabled = dis;
+  const rg = document.getElementById('pTempRange'); if (rg) rg.disabled = dis;
+  if (dis) { TAU = trainTemp(boardStep()); renderTopList(); drawTempHeat(); }
+  syncTempInputs();          // 跟随模式下也要把当前 τ 显示在输入框里
+  updateTempHint();
+}
+
+function updateTempHint() {
+  const el = document.getElementById('tempHint');
+  if (!el) return;
+  const st = boardStep();
+  el.innerHTML = TAU_FOLLOW
+    ? `跟随训练调度 @ 第 ${st} 手 → τ=<b style="color:#fbbf24">${trainTemp(st).toFixed(2)}</b>` +
+      `<span style="color:#64748b"> (v36: step0-3 1.0→0.6, step4-7 0.6→0.15, step≥8 平台 0.15)</span>`
+    : `手动 τ=<b style="color:#fbbf24">${(TAU <= 0.01 ? 0 : TAU).toFixed(2)}</b>` +
+      `<span style="color:#64748b"> · 训练调度 @ 第 ${st} 手 应为 ${trainTemp(st).toFixed(2)}</span>`;
+}
+
+// 温度调整后的分布: p ∝ prob^(1/τ), 返回 {p, argmax, entropy(bits), greedy}
+// ⚠️ window._prob 存的是后端返回的【原始访问次数】(不是归一化概率) —— 数学上等价:
+//    p_i ∝ (c_i/N)^(1/τ) = c_i^(1/τ)·N^(-1/τ), 归一化时常数因子 N^(-1/τ) 被约掉
+function tempDist() {
+  const prob = window._prob;
+  if (!prob || !prob.length) return null;
+  const n = prob.length, p = new Float64Array(n);
+  if (TAU <= 0.01) {                      // 与训练同口径: τ≤1e-2 → 直接 argmax(数值安全)
+    let bi = 0, bv = -1;
+    for (let i = 0; i < n; i++) if (prob[i] > bv) { bv = prob[i]; bi = i; }
+    p[bi] = 1;
+    return {p, argmax: bi, entropy: 0, greedy: true};
+  }
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    const v = prob[i] > 0 ? Math.pow(prob[i], 1 / TAU) : 0;
+    p[i] = v; s += v;
+  }
+  if (!(s > 0)) return null;
+  let H = 0, bi = 0;
+  for (let i = 0; i < n; i++) {
+    p[i] /= s;
+    if (p[i] > 0) H -= p[i] * Math.log2(p[i]);
+    if (p[i] > p[bi]) bi = i;
+  }
+  return {p, argmax: bi, entropy: H, greedy: false};
+}
+
+function drawTempHeat() {
+  const cb = document.getElementById('tempHeat');
+  if (!window._prob) return;
+  const d = tempDist();
+  const useTemp = cb && cb.checked && d;
+  drawProb(document.getElementById('probCanvas'), useTemp ? Array.from(d.p) : window._prob,
+           window._stones || [], window._best, window._top || []);
+}
+
+function sampleMove(k) {
+  const d = tempDist();
+  if (!d) return;
+  let acc = 0;
+  const cum = new Float64Array(d.p.length);
+  for (let i = 0; i < d.p.length; i++) { acc += d.p[i]; cum[i] = acc; }
+  if (!(acc > 0)) return;
+  for (let s = 0; s < k; s++) {
+    const r0 = Math.random() * acc;
+    let lo = 0, hi = d.p.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r0) lo = mid + 1; else hi = mid; }
+    SAMPLE_TALLY[lo] = (SAMPLE_TALLY[lo] || 0) + 1;
+    LAST_SAMPLE = {r: Math.floor(lo / 15), c: lo % 15};
+  }
+  renderTopList();
+  drawSampleMarker();
+}
+
+function clearSamples() {
+  SAMPLE_TALLY = {}; LAST_SAMPLE = null;
+  repaintSetup(); renderTopList();
+}
+
+// 重绘摆谱棋盘(保留候选点面板) + 分析标注 + 采样标记
+function repaintSetup() {
+  drawSetupBoard(true);
+  drawSetupMarkers();
+  drawSampleMarker();
+}
+
+function drawSampleMarker() {
+  if (!LAST_SAMPLE) return;
+  const cv = document.getElementById('setupCanvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const x = SP + LAST_SAMPLE.c * SC, y = SP + LAST_SAMPLE.r * SC;
+  ctx.save();
+  ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 2.5; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.arc(x, y, SC * 0.46, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `${Math.round(SC * 0.6)}px sans-serif`;
+  ctx.fillText('🎲', x, y + 1);
+}
+
+function renderSamples() {
+  const el = document.getElementById('sampleOut');
+  if (!el) return;
+  const ks = Object.keys(SAMPLE_TALLY);
+  if (!ks.length) { el.innerHTML = ''; return; }
+  const total = ks.reduce((s, k) => s + SAMPLE_TALLY[k], 0);
+  const rows = ks.map(k => ({i: parseInt(k), n: SAMPLE_TALLY[k]}))
+                 .sort((a, b) => b.n - a.n);
+  const top = rows.slice(0, 6).map(x => {
+    const coord = fmtCoord(Math.floor(x.i / 15), x.i % 15);
+    const pct = Math.round(100 * x.n / total);
+    const isBest = window._best && Math.floor(x.i / 15) === window._best.r && x.i % 15 === window._best.c;
+    return `<span style="color:${isBest ? '#fbbf24' : '#e2e8f0'}">${coord} ${pct}%<span style="color:#64748b">(${x.n})</span></span>`;
+  }).join(' · ');
+  const rest = rows.length > 6 ? ` · <span style="color:#64748b">其他 ${rows.slice(6).reduce((s, x) => s + x.n, 0)} 次 / ${rows.length - 6} 点</span>` : '';
+  const lastCoord = LAST_SAMPLE ? fmtCoord(LAST_SAMPLE.r, LAST_SAMPLE.c) : '—';
+  const diff = LAST_SAMPLE && window._best &&
+        (LAST_SAMPLE.r !== window._best.r || LAST_SAMPLE.c !== window._best.c)
+        ? `<span style="color:#a78bfa">(≠贪心点)</span>` : `<span style="color:#64748b">(=贪心点)</span>`;
+  el.innerHTML = `🎲 采样累计 <b>${total}</b> 次 · 最近一次落在 <b style="color:#a78bfa">${lastCoord}</b> ${diff}<br>` + top + rest;
+}
+
+// 候选点列表 (含温度调整后概率) —— 由分析结果渲染与 setTemp 共用
+function renderTopList() {
+  const top = window._top || [], best = window._best || null;
+  const el = document.getElementById('topList');
+  if (!el) return;
+  if (!top.length) { el.innerHTML = ''; return; }
+  const d = tempDist();
+  const maxV = Math.max(1, ...top.map(t => t.visits));
+  el.innerHTML = top.map(t => {
+    const w = Math.round(100 * t.visits / maxV);
+    const isBest = best && t.r === best.r && t.c === best.c;
+    const isPick = LAST_SAMPLE && t.r === LAST_SAMPLE.r && t.c === LAST_SAMPLE.c;
+    let tpHtml = '';
+    if (d) {
+      const q = d.p[t.r * 15 + t.c] * 100;
+      const txt = q >= 10 ? q.toFixed(1) : (q > 0 ? q.toFixed(2) : '0');
+      tpHtml = `<span style="font-size:11px;color:${isPick ? '#a78bfa' : '#fbbf24'}" title="温度 τ 调整后的选中概率 (p ∝ 访问占比^(1/τ))">τ ${txt}%</span> `;
+    }
+    return `<div style="margin:3px 0"><span class="tag ${isBest ? 'best' : ''}" style="${isPick ? 'outline:2px solid #a78bfa' : ''}">${fmtCoord(t.r, t.c)}</span> ` +
+      `<span style="font-size:11px">${t.visits}次 ${t.pct}% Q=${t.q >= 0 ? '+' : ''}${t.q}</span> ` + tpHtml +
+      `<span class="topbar" style="width:${w * 2}px"></span></div>`;
+  }).join('');
+  // 决策行 + 温度摘要
+  const bb = document.getElementById('bestBox');
+  if (bb) {
+    if (best) {
+      let txt = `🏆 贪心(τ→0)决策: <b class="best">${fmtCoord(best.r, best.c)}</b> ` +
+                `<span style="color:#64748b">(访问 ${best.visits} 次 = argmax)</span>`;
+      if (d) {
+        const pb = d.p[best.r * 15 + best.c] * 100;
+        txt += d.greedy
+          ? `<br>🌡 τ≤0.01 = 贪心 → <b style="color:#fbbf24">100%</b> 落此点`
+          : `<br>🌡 τ=${TAU.toFixed(2)} 下此点被选中 <b style="color:#fbbf24">${pb.toFixed(1)}%</b>` +
+            ` <span style="color:#a78bfa">(其余 ${(100 - pb).toFixed(1)}% 会给别的候选点)</span>`;
+      }
+      bb.innerHTML = txt;
+    } else { bb.innerHTML = ''; }
+  }
+  // 温度面板可见性 + 摘要
+  const tp = document.getElementById('tempPanel');
+  if (tp) tp.style.display = d ? 'block' : 'none';
+  const ts = document.getElementById('tempShow');
+  if (ts) ts.textContent = (TAU <= 0.01 ? '0(贪心)' : TAU.toFixed(2));
+  const te = document.getElementById('tempEntropy');
+  if (te && d) {
+    te.innerHTML = d.greedy
+      ? '<span style="color:#64748b">熵 0 bit · 等效候选 1 个</span>'
+      : `熵 <b style="color:#94a3b8">${d.entropy.toFixed(2)}</b> bit · 等效候选 <b style="color:#94a3b8">${Math.pow(2, d.entropy).toFixed(2)}</b> 个`;
+  }
+  renderSamples();
+}
+
+// ── MCTS 参数面板 (默认值 = 训练配方) ──
+const MCTS_DEFAULTS = {c_init: 1.25, c_base: 19652, prior_exploration_fraction: 0.25, dirichlet_alpha: 0.03};
+setParams(MCTS_DEFAULTS);
+loadCfgList();
+// 温度偏好持久化 (跟随开关 + 手动值)
+try {
+  const f = localStorage.getItem('mcts_tau_follow');
+  if (f !== null) { const cb = document.getElementById('tempFollow'); if (cb) cb.checked = (f === '1'); }
+  const t = localStorage.getItem('mcts_tau');
+  if (t !== null) TAU = Math.max(0, Math.min(3, parseFloat(t) || 1));
+} catch (e) {}
+onTempFollow(true);
+function setParams(p) {
+  document.getElementById('pCinit').value = p.c_init;
+  document.getElementById('pCbase').value = p.c_base;
+  document.getElementById('pPexp').value = p.prior_exploration_fraction;
+  document.getElementById('pAlpha').value = p.dirichlet_alpha;
+}
+function getParams() {
+  return {
+    c_init: parseFloat(document.getElementById('pCinit').value) || MCTS_DEFAULTS.c_init,
+    c_base: parseFloat(document.getElementById('pCbase').value) || MCTS_DEFAULTS.c_base,
+    prior_exploration_fraction: parseFloat(document.getElementById('pPexp').value) ?? MCTS_DEFAULTS.prior_exploration_fraction,
+    dirichlet_alpha: parseFloat(document.getElementById('pAlpha').value) ?? MCTS_DEFAULTS.dirichlet_alpha
+  };
+}
+function cfgStore() { return JSON.parse(localStorage.getItem('mcts_cfgs') || '{}'); }
+function loadCfgList() {
+  const cfgs = cfgStore();
+  document.getElementById('cfgSelect').innerHTML = Object.keys(cfgs).map((k, i) =>
+    `<option value="${i}">${k}</option>`).join('');
+}
+function saveCfg() {
+  const name = document.getElementById('cfgName').value.trim();
+  if (!name) { alert('请输入配置名'); return; }
+  const cfgs = cfgStore();
+  cfgs[name] = getParams();
+  localStorage.setItem('mcts_cfgs', JSON.stringify(cfgs));
+  document.getElementById('cfgName').value = '';
+  loadCfgList();
+  alert('配置「' + name + '」已保存 (浏览器本地)');
+}
+function loadCfg() {
+  const cfgs = cfgStore();
+  const keys = Object.keys(cfgs);
+  const idx = parseInt(document.getElementById('cfgSelect').value);
+  if (!keys.length || isNaN(idx)) return;
+  const k = keys[idx];
+  setParams(cfgs[k]);
+  document.getElementById('meta').textContent = '⚙️ 已加载配置「' + k + '」';
+}
+function deleteCfg() {
+  const cfgs = cfgStore();
+  const keys = Object.keys(cfgs);
+  const idx = parseInt(document.getElementById('cfgSelect').value);
+  if (!keys.length || isNaN(idx)) return;
+  const k = keys[idx];
+  if (!confirm('删除配置 ' + k + '?')) return;
+  delete cfgs[k];
+  localStorage.setItem('mcts_cfgs', JSON.stringify(cfgs));
+  loadCfgList();
+}
+
+async function load() {
+  const sim = parseInt(document.getElementById('simInput').value) || 40;
+  const weight = document.getElementById('weightSelect').value;
+  const params = getParams();
+  const r = await fetch(API + '/api/mcts_viz', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sim: sim, stones: myStones, weight: weight,
+      c_init: params.c_init, c_base: params.c_base,
+      prior_exploration_fraction: params.prior_exploration_fraction,
+      dirichlet_alpha: params.dirichlet_alpha})}).then(d => d.json());
+  if (!r.ok) { document.getElementById('meta').textContent = '❌ ' + (r.error || '失败'); return; }
+  const playerName = r.player === 1 ? '黑' : '白';
+  document.getElementById('meta').textContent =
+    `🧠 权重: ${weight} · 模拟 ${r.sim_count} 次 · 轮到 ${playerName} 走 · 局面 ${r.stones.length} 子 · 全部循环已存档可回放`;
+  document.getElementById('finalWeight').textContent = `〔权重: ${weight} · ${playerName}视角 · 模拟 ${r.sim_count} 次〕`;
+  // 进度 (分母=实际 sim_count)
+  const totalSim = r.sim_count;
+  const seq = r.steps;
+  const fill = document.getElementById('progressFill');
+  fill.style.width = '0%';
+  let i = 0;
+  const interval = setInterval(() => {
+    i++;
+    const cs = seq[i-1].count_sum;
+    const pct = Math.round(100 * cs / totalSim);
+    fill.style.width = pct + '%';
+    document.getElementById('progressLabel').textContent =
+      `count[s].sum() = ${cs} / ${totalSim} (${pct}%)`;
+    if (i >= seq.length) clearInterval(interval);
+  }, Math.max(5, 600 / seq.length));
+  // 全量存所有模拟循环 → 双滑块区间回放 (默认显示全部)
+  window._steps = r.steps;
+  const n = r.steps.length;
+  document.getElementById('simMin').min = 0;
+  document.getElementById('simMin').max = n;
+  document.getElementById('simMin').value = 0;
+  document.getElementById('simMax').min = 0;
+  document.getElementById('simMax').max = n;
+  document.getElementById('simMax').value = n;
+  renderSimRange();
+  // 🎬 轨迹重放滑块初始化
+  const rp = document.getElementById('simReplay');
+  rp.min = 0; rp.max = n; rp.value = 0;
+  window._replayStones = r.stones || [];
+  renderReplay();
+  // ── 搜索深度统计 (policy/value 配合度: 配合好→深, 配合差→浅层乱撞) ──
+  if (r.depth_hist && r.depth_hist.length) {
+    let running = 0;
+    const bars = r.depth_hist.map(d => {
+      const pct = Math.round(100 * d.count / r.sim_count);
+      running += d.count;
+      const totalPct = Math.round(100 * running / r.sim_count);
+      return `<div style="display:flex;align-items:center;gap:6px;margin:2px 0">
+        <span style="min-width:38px;color:#7dd3fc;font-weight:600">${d.depth}层</span>
+        <span style="width:${Math.min(200, pct * 2)}px;height:12px;background:#7c3aed;border-radius:3px"></span>
+        <span style="font-size:11px;color:#94a3b8">${d.count}次 (${pct}%)</span>
+        <span style="font-size:11px;color:#34d399;font-weight:600">total ${totalPct}%</span></div>`;
+    }).join('');
+    document.getElementById('depthStats').innerHTML =
+      `<div style="font-size:12px;color:#7dd3fc;font-weight:bold;margin-bottom:2px">📏 搜索深度</div>` +
+      `<div style="font-size:10px;color:#64748b;margin-bottom:4px">最长 <b style="color:#34d399">${r.max_depth}层</b> · 平均 <b style="color:#fbbf24">${r.avg_depth}层</b> · total=该层及以上累计占比 · policy/value 配合好→深</div>` + bars;
+    document.getElementById('depthStats').style.display = 'block';
+  } else {
+    document.getElementById('depthStats').style.display = 'none';
+  }
+  // ── 模拟路线 n-gram 词频 (2026-09-07 用户: 子串聚类, 滑杆切步数) ──
+  const rr = document.getElementById('routeRank');
+  const ngram = r.route_rank || {};
+  const maxSeen = ngram._max_seen || 0;
+  const rrHdr = `<div style="font-size:12px;color:#fbbf24;font-weight:bold;margin-bottom:2px">🏁 路线词频聚类</div>
+    <div style="font-size:10px;color:#64748b;margin-bottom:2px">模拟经该片段即计 · 位置 开/中/尾 · 滑杆切片段长度</div>`;
+  if (maxSeen) {
+    const maxL = Math.min(15, maxSeen);
+    const sliderHtml = `<div style="display:flex;align-items:center;gap:6px;margin:4px 0">
+      <input type="range" id="ngramLen" min="1" max="${maxL}" value="1" oninput="renderNgram(this.value)" style="flex:1;accent-color:#7c3aed;cursor:pointer">
+      <span id="ngramLenLabel" style="font-size:12px;color:#7dd3fc;min-width:52px;text-align:center;font-weight:bold">1步</span>
+      <span style="font-size:10px;color:#64748b;white-space:nowrap">最长${maxL}步</span>
+    </div>
+    <div style="display:flex;gap:4px;margin:2px 0 4px">
+      ${[3, 5, 7, 9].filter(v => v <= maxL).map(v => `<button onclick="renderNgram(${v})" style="flex:1;background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:2px 0;font-size:10px;cursor:pointer">${v}步</button>`).join('')}
+    </div>`;
+    rr.innerHTML = rrHdr + sliderHtml + '<div id="ngramBody"></div>';
+    window._ngramData = ngram;
+    renderNgram(1);
+  } else {
+    rr.innerHTML = rrHdr + `<div style="font-size:11px;color:#64748b">本局 ${r.sim_count} 次模拟无有效路径片段</div>`;
+  }
+  rr.style.display = 'block';
+  // 最终分布
+  window._best = r.best || null;
+  window._top = r.top || [];
+  drawProb(document.getElementById('probCanvas'), r.prob, r.stones, r.best, r.top);
+  // ★ 2026-09-27: 同规格再画一张"网络 policy 先验"热力图 + 与 MCTS 实际分布的偏离统计
+  //   ⚠️ 必须判空: policy 缺失时 drawProb(undefined) 会抛错 → 打断整个渲染 ("点模拟没反应" ✗)
+  if (r.policy && r.policy.length) {
+    drawProb(document.getElementById('polCanvas'), r.policy, r.stones, r.best, r.top);
+  }
+  renderPolDev(r.pol_dev, r.policy, r.prob_norm || r.prob);
+  // 摆谱大棋盘上也叠加 AI 决策标注 (best 金色★ + TOP6 排名圈深→浅)
+  drawSetupMarkers();
+  // 2026-09-13: 候选点列表渲染在摆谱棋盘下方 (#topList/#bestBox 已移到 candQuick 面板内)
+  const _cq = document.getElementById('candQuick');
+  if (_cq) _cq.style.display = 'block';
+  const _cqm = document.getElementById('candQuickMeta');
+  if (_cqm) _cqm.textContent = (document.getElementById('finalWeight').textContent || '');
+  // 温度采样: 记录原始分布/局面, 跟随训练调度时按当前手数取 τ, 再统一重绘候选点(含 τ 概率)
+  // drawTempHeat() 会按「热力图按τ」开关决定画原始分布还是 τ 调整后分布
+  window._prob = r.prob; window._stones = r.stones || [];
+  if (TAU_FOLLOW) TAU = trainTemp(boardStep());
+  syncTempInputs();
+  updateTempHint();
+  drawTempHeat();
+  renderTopList();
+}
+
+// ── 路线词频聚类渲染 (滑杆/快捷按钮调用, 纯前端无请求) ──
+function renderNgram(L) {
+  L = parseInt(L) || 1;
+  const data = window._ngramData || {};
+  const label = document.getElementById('ngramLenLabel');
+  const slider = document.getElementById('ngramLen');
+  if (label) label.textContent = `${L}步`;
+  if (slider) slider.value = L;
+  const items = data[String(L)] || [];
+  const body = document.getElementById('ngramBody');
+  if (!body) return;
+  if (!items.length) {
+    body.innerHTML = '<div style="font-size:10px;color:#475569">(无该长度片段)</div>';
+    return;
+  }
+  const fmtPos = p => {
+    const tot = p[0] + p[1] + p[2];
+    if (!tot) return '位置—';
+    const seg = [];
+    if (p[0]) seg.push(`开${Math.round(100 * p[0] / tot)}%`);
+    if (p[1]) seg.push(`中${Math.round(100 * p[1] / tot)}%`);
+    if (p[2]) seg.push(`尾${Math.round(100 * p[2] / tot)}%`);
+    return seg.join(' ');
+  };
+  const maxC = items[0].count;
+  const rows = items.map((x, i) => {
+    const chain = x.moves.map(([r, c]) => fmtCoord(r, c)).join(' → ');
+    const w = Math.max(2, Math.round(100 * x.count / maxC));
+    const hot = x.count >= 2;
+    return `<div style="display:flex;gap:5px;align-items:center;padding:2px 0;border-bottom:1px dashed ${hot ? '#2a3a55' : '#1e293b'}">
+      <span style="min-width:16px;color:#475569;font-size:10px">${i + 1}.</span>
+      <span style="flex:1;color:${hot ? '#7dd3fc' : '#64748b'};font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${chain}">${chain}</span>
+      <span style="width:30px;height:4px;background:#1e293b;border-radius:2px;overflow:hidden"><span style="display:block;width:${w}%;height:100%;background:${hot ? '#7c3aed' : '#334155'}"></span></span>
+      <span style="font-size:10px;color:#fbbf24;white-space:nowrap;min-width:34px;text-align:right">${x.count}次</span>
+    </div>
+    <div style="font-size:9px;color:#64748b;padding:0 0 2px 21px">${fmtPos(x.pos)}</div>`;
+  }).join('');
+  const multiN = items.filter(x => x.count >= 2).length;
+  body.innerHTML = `<div style="font-size:10px;color:#94a3b8;margin-bottom:2px">${L}步连续片段 top${items.length} · ${multiN}种被重复≥2次 (最高 ${maxC}次)</div>` + rows;
+}
+
+load();
+
+// 保存/加载局面
+// 🎯 出题: 解析推荐选点 "F8, J10" 或 "8,6" → [{r,c}...] (顺序=优先级)
+function parseAnswerList(s) {
+  const out = [];
+  const parts = (s || '').split(/[,，;；\s]+/).filter(Boolean);
+  for (const pt of parts) {
+    let m = pt.toUpperCase().match(/^([A-O])([1-9]|1[0-5])$/);
+    if (m) { out.push({r: 15 - parseInt(m[2]), c: m[1].charCodeAt(0) - 65}); continue; }
+    m = pt.match(/^([1-9]|1[0-5])[,xX-]([1-9]|1[0-5])$/);
+    if (m) out.push({r: parseInt(m[1]) - 1, c: parseInt(m[2]) - 1});
+  }
+  return out.length ? out : null;
+}
+async function savePosition() {
+  const name0 = document.getElementById('posName').value.trim();
+  if (!name0) { alert('请输入局面名称'); return; }
+  if (!myStones.length) { alert('棋盘为空'); return; }
+  const answer = parseAnswerList(document.getElementById('ansInput').value);
+  const score = (() => { const v = parseFloat(document.getElementById('scoreInput').value); return isNaN(v) ? null : v; })();
+  // 🎯 出题: 写了推荐点 → 标题自动加"题目:"前缀
+  const name = answer ? (name0.startsWith('题目:') ? name0 : '题目:' + name0) : name0;
+  const r = await fetch(API + '/api/positions/save', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, tag: '', stones: myStones.map(s => ({r: s.r, c: s.c, v: s.v})), answer, score})}).then(d => d.json());
+  if (r.ok) { document.getElementById('posName').value = ''; document.getElementById('ansInput').value = ''; loadPositionList(); }
+}
+let positionsCache = [];
+async function loadPositionList() {
+  const r = await fetch(API + '/api/positions/list').then(d => d.json());
+  positionsCache = r.positions || [];
+  const sel = document.getElementById('posSelect');
+  sel.innerHTML = positionsCache.map((p, i) =>
+    `<option value="${i}">${p.name}${p.tag ? ' [' + p.tag + ']' : ''}${p.created ? ' ·' + p.created : ''}</option>`).join('');
+  document.getElementById('posCount').textContent = positionsCache.length + ' 个';
+}
+async function loadPosition() {
+  const idx = parseInt(document.getElementById('posSelect').value);
+  const p = positionsCache[idx];
+  if (!p) return;
+    myStones = p.stones.map((s, i) => ({r: s.r, c: s.c, v: s.v, n: i + 1})); redoStack = [];
+  document.getElementById('posName').value = p.name || '';
+  // 🎯 编辑回填 (2026-08-26): 已有 answer/score → 输入框, 可补打分/选点后保存覆盖
+  document.getElementById('ansInput').value = (p.answer || []).map(a => fmtCoord(a.r, a.c)).join(', ');
+  document.getElementById('scoreInput').value = (p.score !== null && p.score !== undefined) ? p.score : '';
+  const nb = myStones.filter(s => s.v === 1).length;
+  setColor(nb === myStones.length - nb ? 1 : -1);
+  drawSetupBoard();
+  load();
+}
+async function deletePosition() {
+  const idx = parseInt(document.getElementById('posSelect').value);
+  const p = positionsCache[idx];
+  if (!p || !confirm('删除局面 ' + p.name + '?')) return;
+  const r = await fetch(API + '/api/positions/delete', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: p.name})}).then(d => d.json());
+  if (r.ok) loadPositionList();
+}
+
+// 摆谱初始化
+document.getElementById('setupCanvas').addEventListener('click', setupClick);
+setColor(1);
+drawSetupBoard();
+initWeights();
+loadPositionList();
+</script>
+</body>
+</html>

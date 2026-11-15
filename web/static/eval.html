@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>棋力测评 · vs Rapfi</title>
+<script src="/static/chart.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #0b1220; color: #e2e8f0; min-height: 100vh; }
+  nav { display: flex; gap: 8px; padding: 14px 16px 0; flex-wrap: wrap; }
+  nav a { color: #7dd3fc; text-decoration: none; font-size: 13px; padding: 6px 14px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+  nav a:hover { background: #1e293b; }
+  nav a.active { background: #1e293b; border-color: #7dd3fc; color: #e2e8f0; }
+  .container { display: flex; gap: 16px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+  .board-wrapper { background: #dcb35c; border-radius: 8px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.5); flex-shrink: 0; }
+  canvas#board { display: block; width: 480px; height: 480px; }
+  /* 📈 我方 value 胜率曲线 (2026-10-01): 与对弈页同款"纸色"底 + 深色线 */
+  .board-col { display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
+  .wr-wrap { width: 504px; background: #f2e8d5; border: 1px solid #b08d57; border-radius: 8px; padding: 8px 10px; }
+  .wr-title { font-size: 12px; font-weight: 600; color: #4a3418; margin-bottom: 4px; }
+  .wr-title span { font-weight: 400; color: #806040; font-size: 11px; }
+  canvas#wrChart { display: block; width: 100%; height: 190px !important; }
+  .sidebar { width: 300px; flex-shrink: 0; }
+  .panel { background: #1e293b; border-radius: 8px; padding: 12px; margin-bottom: 10px; border: 1px solid #334155; }
+  .panel h3 { font-size: 14px; color: #7dd3fc; margin-bottom: 8px; border-bottom: 1px solid #334155; padding-bottom: 5px; }
+  .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .row label { font-size: 13px; min-width: 52px; color: #94a3b8; }
+  .row select, .row input { flex: 1; padding: 5px 8px; border: 1px solid #475569; border-radius: 5px; background: #0f172a; color: #e2e8f0; font-size: 13px; }
+  .btn { width: 100%; padding: 10px; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; font-weight: 600; }
+  .btn-start { background: #7c3aed; color: #fff; }
+  .btn-start:hover { background: #8b5cf6; }
+  .btn-stop { background: #8b3a3a; color: #f0d0b0; margin-top: 6px; }
+  .status { font-size: 13px; padding: 8px 10px; background: #0f172a; border-radius: 6px; margin-top: 6px; line-height: 1.6; }
+  .status .win { color: #34d399; font-weight: 700; }
+  .status .lose { color: #f87171; font-weight: 700; }
+  .history { max-height: 220px; overflow-y: auto; font-size: 12px; color: #cbd5e1; margin-top: 6px; }
+  .history::-webkit-scrollbar { width: 4px; }
+  .history::-webkit-scrollbar-thumb { background: #475569; }
+  .hrow { display: flex; gap: 6px; padding: 2px 0; }
+  .hrow .idx { color: #64748b; min-width: 26px; }
+  .hrow .me { color: #7dd3fc; }
+  .hrow .rapfi { color: #fb923c; }
+  .note { font-size: 11px; color: #64748b; line-height: 1.6; margin-top: 6px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">🏠 对弈</a>
+  <a href="/game9">🎯 9×9</a>
+  <a href="/eval" class="active">⚔️ 棋力测评</a>
+  <a href="/dashboard">📊 训练监控</a>
+  <a href="/mcts">🧠 MCTS</a>
+  <a href="/network">🔬 网络</a>
+  <a href="/evolution">📈 演化</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+
+<div class="container">
+  <div class="board-col">
+    <div class="board-wrapper">
+      <canvas id="board" width="480" height="480"></canvas>
+    </div>
+    <div class="wr-wrap">
+      <div class="wr-title">📈 我方 value 胜率 <span id="wrMeta">(每步后用我方权重的 value 头预测)</span></div>
+      <canvas id="wrChart" height="190"></canvas>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="panel">
+      <h3>⚔️ 棋力测评 (vs Rapfi)</h3>
+      <div class="row">
+        <label>权重</label>
+        <select id="verSel"><option value="v42">v42</option><option value="v41">v41</option><option value="v40">v40</option><option value="v39">v39</option><option value="v38">v38</option><option value="v37">v37</option><option value="v36">v36</option><option value="v35">v35</option><option value="v34">v34</option><option value="v33">v33</option><option value="v32">v32</option><option value="v31">v31</option><option value="v29">v29</option><option value="v28">v28</option><option value="v27">v27</option><option value="v26">v26</option><option value="v25">v25</option><option value="v24">v24</option><option value="v23">v23</option><option value="v21b">v21b</option><option value="v21">v21</option><option value="v20b">v20b</option><option value="v19">v19</option><option value="v18">v18</option><option value="v12">v12</option><option value="v14">v14</option><option value="v10">v10</option></select>
+        <select id="genSel"><option>加载中…</option></select>
+      </div>
+      <div class="row">
+        <label>我方sim</label>
+        <input type="number" id="simInput" value="100" min="1" max="2000">
+      </div>
+      <div class="row">
+        <label>🌡温度</label>
+        <input type="number" id="tempInput" value="0.05" min="0.05" max="5" step="0.05">
+        <span style="font-size:12px;color:#806040;white-space:nowrap;">0.05=贪心最强</span>
+      </div>
+      <div class="row">
+        <label>Rapfi档</label>
+        <input type="range" id="depthSel" min="0" max="30" value="10" oninput="document.getElementById('depthVal').textContent=this.value" style="flex:1;accent-color:#f59e0b;cursor:pointer">
+        <span id="depthVal" style="font-size:13px;color:#fbbf24;min-width:22px;text-align:center">10</span>
+      </div>
+      <div class="row">
+        <label>我方执</label>
+        <select id="colorSel">
+          <option value="true">黑 (先手)</option>
+          <option value="false">白 (后手)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>开局手顺</label>
+        <input id="firstMovesInput" placeholder="如 H8 H9 (黑白交替·从黑起, 空=不预设)" style="flex:1;background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:5px 8px;font-size:13px">
+        <button onclick="document.getElementById('firstMovesInput').value=''" title="清空=不预设开局" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;border-radius:5px;padding:5px 8px;cursor:pointer">✕</button>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin:-2px 0 8px 0;line-height:1.5">
+        支持 <b>H8 H9</b> / <b>8,6 7,7</b> 写法；预设的手直接落子不走引擎，之后轮到谁仍按「我方执」判定
+        —— Rapfi 和我方权重<b>都适用</b>（例: 想测"H8 H6 这条线"，就填 <b>H8 H6</b>，黑1由谁走都行）
+      </div>
+      <button class="btn btn-start" id="btnStart" onclick="startEval()">▶ 开始测评</button>
+      <button class="btn btn-stop" id="btnStop" onclick="stopEval()" style="display:none">⏹ 停止</button>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <input id="posName" placeholder="棋谱名称" style="flex:1;background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:5px;padding:5px 8px;font-size:13px">
+        <button onclick="savePosition()" style="background:#1e293b;color:#34d399;border:1px solid #475569;border-radius:5px;padding:5px 10px;cursor:pointer">💾 保存棋谱</button>
+      </div>
+      <div class="status" id="status">选择配置后开始 · 自动对弈并可视化</div>
+      <div class="history" id="history"></div>
+    </div>
+    <div class="note">💡 Rapfi = 世界级五子棋引擎 (Gomocup 冠军级)。depth 越小越弱。<br>
+      参考刻度: 目前 v12 it190 连 depth=4 都 0:10 速杀 (10-19手) — 找"恰好能赢的档位"= 我们的绝对水平线。</div>
+  </div>
+</div>
+
+<script>
+const API = '';
+const LETTERS = 'ABCDEFGHIJKLMNO';
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const COLS = 480, PAD = 26, CELL = (COLS - 2 * PAD) / 14;
+let timer = null;
+let busy = false;   // 防并发: 上一步未完成不发下一步 (sim大时step耗时长, 固定间隔轮询会堆积)
+let finished = false;  // done 后防重复渲染 (2026-08-23: Rapfi无回应超时30s期间在途请求可能再渲染一次)
+let _weights = [];
+
+function drawBoard(stones, lastMove) {
+  ctx.clearRect(0, 0, COLS, COLS);
+  const grad = ctx.createLinearGradient(0, 0, COLS, COLS);
+  grad.addColorStop(0, '#dcb35c'); grad.addColorStop(.5, '#c8a04c'); grad.addColorStop(1, '#dcb35c');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, COLS, COLS);
+  ctx.strokeStyle = 'rgba(120,80,30,.2)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 25; i++) {
+    ctx.beginPath(); ctx.moveTo(Math.random()*COLS, 0); ctx.lineTo(Math.random()*COLS, COLS); ctx.stroke();
+  }
+  ctx.strokeStyle = '#3a2810'; ctx.lineWidth = 1.2;
+  for (let i = 0; i < 15; i++) {
+    const p = PAD + i * CELL;
+    ctx.beginPath(); ctx.moveTo(PAD, p); ctx.lineTo(PAD + 14*CELL, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, PAD); ctx.lineTo(p, PAD + 14*CELL); ctx.stroke();
+  }
+  ctx.strokeStyle = '#3a2810'; ctx.lineWidth = 2;
+  ctx.strokeRect(PAD, PAD, 14*CELL, 14*CELL);
+  ctx.fillStyle = '#3a2810';
+  [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]].forEach(([r,c]) => {
+    ctx.beginPath(); ctx.arc(PAD + c*CELL, PAD + r*CELL, 4, 0, Math.PI*2); ctx.fill();
+  });
+  ctx.fillStyle = '#5a3820'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = PAD + i * CELL;
+    ctx.fillText(LETTERS[i], p, 10); ctx.fillText(LETTERS[i], p, COLS-10);
+    ctx.fillText(15-i, 12, p); ctx.fillText(15-i, COLS-12, p);
+  }
+  (stones || []).forEach(s => {
+    const x = PAD + s.c * CELL, y = PAD + s.r * CELL;
+    const r = CELL * .43;
+    ctx.beginPath(); ctx.arc(x+2, y+2, r, 0, Math.PI*2); ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fill();
+    const g = ctx.createRadialGradient(x-r*.3, y-r*.3, r*.1, x, y, r);
+    if (s.v === 1) { g.addColorStop(0,'#666'); g.addColorStop(1,'#111'); }
+    else { g.addColorStop(0,'#fff'); g.addColorStop(1,'#bbb'); }
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fillStyle = g; ctx.fill();
+    if (s.v === 1) { ctx.strokeStyle = '#000'; ctx.lineWidth = .5; ctx.stroke(); }
+  });
+  if (lastMove) {
+    const x = PAD + lastMove.c * CELL, y = PAD + lastMove.r * CELL;
+    ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2); ctx.fillStyle = '#ef4444'; ctx.fill();
+  }
+}
+
+function fmtCoord(r, c) { return LETTERS[c] + (15 - r); }
+
+async function loadWeights() {
+  const ver = document.getElementById('verSel').value;
+  const r = await fetch(API + '/api/weights').then(d => d.json());
+  const ws = (r.weights || []).filter(w => w.version === ver && w.file !== 'weights.pt');
+  _weights = ws;
+  const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+  ws.sort((a, b) => itNum(b.file) - itNum(a.file));
+  const genSel = document.getElementById('genSel');
+  genSel.innerHTML = ws.length ? ws.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('')
+                               : '<option value="">无权重</option>';
+}
+document.getElementById('verSel').onchange = loadWeights;
+// ★ 默认版本跟随【活跃槽】(2026-09-27 单一真相源 active_slot.json) —— 换槽不用改本页
+fetch(API + '/api/slot').then(r=>r.json()).then(s=>{
+  const sel=document.getElementById('verSel');
+  if(s&&s.slot&&[...sel.options].some(o=>o.value===s.slot)) sel.value=s.slot;
+  loadWeights();
+}).catch(()=>loadWeights());
+
+// ── 📈 我方 value 胜率曲线 (2026-10-01 用户: 棋力测评页也要) ──
+//   数据 = 后端 wr_history: 每步后用【我方权重】的 value 头预测"我方胜率"
+//   口径: 只跑 value 头 (不走 MCTS / 不加 Dirichlet 噪声), 视角 = 我方执色, plane3 = 上一手 ✓
+//   读法: 这是我方 value 头的"自我判断" —— 终局那点 ≈100(赢)/≈0(输) 才算准;
+//         若与真实胜负相反 = value 不靠谱 (和 MCTS 判定打架时, 它的可信度更低)
+let wrChart = null;
+const wrHalfPlugin = {
+  id: 'wrHalfLine',
+  afterDraw(chart) {
+    const yA = chart.scales.y, xA = chart.scales.x;
+    if (!yA || !xA) return;
+    const c = chart.ctx;
+    c.save();
+    c.strokeStyle = 'rgba(120,80,30,.45)'; c.setLineDash([4, 3]); c.lineWidth = 1;
+    const y = yA.getPixelForValue(50);
+    c.beginPath(); c.moveTo(xA.left, y); c.lineTo(xA.right, y); c.stroke();
+    c.fillStyle = '#806040'; c.font = '9px sans-serif';
+    c.fillText('50 均势', xA.left + 2, y - 2);
+    c.restore();
+  }
+};
+
+function drawWrChart(state) {
+  try {
+    const cv = document.getElementById('wrChart');
+    if (!cv || !state) return;
+    const hist = (state.wr_history || []).filter(p => p.our_wr !== null && p.our_wr !== undefined);
+    const col = state.our_color === -1 ? '白' : '黑';
+    const meta = document.getElementById('wrMeta');
+    if (meta) {
+      meta.textContent = hist.length
+        ? `(我方执${col} · 干净前向·无MCTS/无噪声 · 逐手 value · 末点 ${hist[hist.length-1].our_wr}%)`
+        : `(我方执${col} · 尚无数据)`;
+    }
+    if (wrChart) { wrChart.destroy(); wrChart = null; }
+    if (!hist.length) return;
+    wrChart = new Chart(cv.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: hist.map(p => p.move === 0 ? '开局' : String(p.move)),
+        datasets: [{
+          label: '我方 value 胜率 %',
+          data: hist.map(p => p.our_wr),
+          borderColor: '#b45309', backgroundColor: 'rgba(180,83,9,.10)',
+          fill: true, tension: .3, borderWidth: 2,
+          pointRadius: 2.5, pointHoverRadius: 4,
+          // 点色 = 这一步谁走的: 蓝=我方 / 橙=Rapfi (与右侧历史列表同色)
+          pointBackgroundColor: hist.map(p => p.ours ? '#0369a1' : '#ea580c'),
+          pointBorderColor: hist.map(p => p.ours ? '#0369a1' : '#ea580c')
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: {
+          legend: { display: true, labels: { color: '#4a3418', boxWidth: 10, font: { size: 10 } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: (c) => {
+                const p = hist[c.dataIndex];
+                return p ? `落子方: ${p.who} · 我方执${col}` : '';
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#806040', font: { size: 9 }, maxTicksLimit: 18 },
+               grid: { color: 'rgba(120,80,30,.12)' },
+               title: { display: true, text: '手数 (点色: 蓝=我方 橙=Rapfi)', color: '#806040', font: { size: 9 } } },
+          y: { min: 0, max: 100, ticks: { color: '#806040', font: { size: 9 }, stepSize: 20 },
+               grid: { color: 'rgba(120,80,30,.12)' },
+               title: { display: true, text: '我方 value 胜率 %', color: '#806040', font: { size: 9 } } }
+        }
+      },
+      plugins: [wrHalfPlugin]
+    });
+  } catch (e) {
+    console.error('[wrChart]', e);   // ⚠️ 辅助块异常绝不能拖垮主渲染/对弈循环
+  }
+}
+
+async function startEval() {
+  const weight = document.getElementById('genSel').value;
+  if (!weight) { alert('请选择权重'); return; }
+  finished = false;
+  busy = false;
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnStop').style.display = '';
+  // 开局手顺解析: "H8 H9" / "H8,H9" / "8,6 7,7" → [{r,c},...]（黑白交替, 从黑起）
+  //   任一手解析失败 → 返回 null（前端拦下并提示, 不静默忽略 ✗）
+  function parseMoves(s) {
+    if (!s) return [];
+    const out = [];
+    // 先按空白/分号拆手; 每个 token 先【整体】当一手("8,6" 本身就是一手),
+    // 整体解析失败再按逗号拆("H8,H9" = 两手) —— 否则 "8,6" 会被逗号拆成 8 和 6 ✗
+    for (const raw of s.split(/[\s，、;；]+/).filter(Boolean)) {
+      let p = parseCoord(raw);
+      if (p) { out.push(p); continue; }
+      for (const tok of raw.split(/[,，]+/).filter(Boolean)) {
+        p = parseCoord(tok);
+        if (!p) return null;
+        out.push(p);
+      }
+    }
+    return out;
+  }
+  const fm = parseMoves(document.getElementById('firstMovesInput').value.trim());
+  if (fm === null) { alert('开局手顺格式有误（示例: H8 H9 或 8,6 7,7）'); return; }
+  const payload = {
+    weight: weight,
+    sim: parseInt(document.getElementById('simInput').value) || 200,
+    // ⚠️ 不能用 || 10: depth=0 是合法值但 falsy, 会被 || 吞成 10 (2026-08-22 用户滑杆选0发现)
+    depth: (() => { const v = parseInt(document.getElementById('depthSel').value); return isNaN(v) ? 10 : v; })(),
+    we_black: document.getElementById('colorSel').value === 'true',
+    temperature: parseFloat(document.getElementById('tempInput').value) || 0.05
+  };
+  if (fm.length) payload.first_moves = fm;
+  const r = await fetch(API + '/api/eval/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)}).then(d=>d.json());
+  if (!r.ok) { alert('启动失败: ' + (r.error||'')); resetBtns(); return; }
+  cfgLine = `⚙️ ${payload.weight.replace('|',' · ')} · sim=${payload.sim} · Rapfi depth=${payload.depth} · 我方${payload.we_black?'黑':'白'}` +
+    (fm.length ? ` · 手顺 ${fm.map(m=>fmtCoord(m.r, m.c)).join(' ')}` : '');
+  drawBoard(r.state.stones, null);
+  drawWrChart(r.state);
+  document.getElementById('history').innerHTML = '';
+  // ★ 预置的开局手也进历史列表 (否则开局那几手在列表里看不到)
+  (r.state.history || []).forEach(pushHistRow);
+  document.getElementById('status').innerHTML = cfgLine + '<br>⏳ 对弈中…';
+  if (timer) clearInterval(timer);
+  timer = setInterval(step, 1500);
+}
+
+// 坐标解析: "H8"(字母列+数字行) 或 "8,6"/"8 6"(行,列 0基或1基?) → {r,c} 0基; 解析失败返回 null
+function parseCoord(s) {
+  if (!s) return null;
+  let m = s.toUpperCase().match(/^([A-O])([1-9]|1[0-5])$/);      // 字母=列 数字=行
+  if (m) return {r: 15 - parseInt(m[2]), c: m[1].charCodeAt(0) - 65};
+  m = s.match(/^([1-9]|1[0-5])\s*[,xX\s]\s*([1-9]|1[0-5])$/);   // "7,8" → r=7-1? 约定 1基行,1基列
+  if (m) return {r: parseInt(m[1]) - 1, c: parseInt(m[2]) - 1};
+  return null;   // 解析失败: 前端提示后仍可启动 (黑1留空=自动)
+}
+
+let cfgLine = '';   // 当前对局配置行 (thinking 提示时保留)
+
+// 历史行渲染 (预设手单独标色, 不再被误显示成 Rapfi ✗)
+function pushHistRow(e) {
+  const h = document.getElementById('history');
+  if (!h || !e) return;
+  const who = e.who && e.who.indexOf('预设') >= 0
+    ? '<span style="color:#fbbf24">预设</span>'
+    : (e.who === '我方' ? '<span class="me">我方</span>' : '<span class="rapfi">Rapfi</span>');
+  h.innerHTML += `<div class="hrow"><span class="idx">${e.move}</span>${who} ${fmtCoord(e.r, e.c)} (${e.color===1?'黑':'白'})</div>`;
+  h.scrollTop = h.scrollHeight;
+}
+
+async function step() {
+  if (busy || finished) return;   // 防堆积 + done 后不再动
+  busy = true;
+  document.getElementById('status').innerHTML = cfgLine + '<br>⏳ 思考中…';
+  try {
+    const r = await fetch(API + '/api/eval/step', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})}).then(d=>d.json());
+    if (!r.ok) { clearInterval(timer); resetBtns(); document.getElementById('status').textContent = '❌ ' + (r.error||''); return; }
+    const st = r.state;
+    drawBoard(st.stones, st.stones.length ? st.stones[st.stones.length-1] : null);
+    drawWrChart(st);
+    const h = document.getElementById('history');
+    const last = st.history[st.history.length-1];
+    if (last && !finished) {
+      pushHistRow(last);
+    }
+    if (r.done) {
+      finished = true;
+      clearInterval(timer);
+      resetBtns();
+      const s = document.getElementById('status');
+      if (st.winner === null) {
+        s.innerHTML = st.engine_error
+          ? '<span style="color:#fbbf24">⚠️ Rapfi 引擎无回应（棋盘无五连, 非真实胜负）</span>'
+          : '🤝 平局';
+      } else {
+        const weWon = (st.winner === 1) === st.we_black;
+        s.innerHTML = `${weWon ? '<span class="win">🏆 我方胜！</span>' : '<span class="lose">💀 Rapfi 胜</span>'} · ${st.moves}手 · Rapfi depth=${st.config.depth} · 我方sim=${st.config.sim}` +
+          (weWon ? '' : '<br>⚠️ 又被速杀 — 降低 depth 或提高 sim 再试');
+      }
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+function stopEval() {
+  if (timer) clearInterval(timer);
+  fetch(API + '/api/eval/reset', {method:'POST'}).catch(()=>{});
+  if (wrChart) { wrChart.destroy(); wrChart = null; }   // 曲线随 reset 一起清掉
+  resetBtns();
+  document.getElementById('status').textContent = '已停止';
+}
+
+// ── 保存棋谱 (复用对弈页的 positions API, 可在网络/MCTS/摆谱加载) ──
+async function savePosition() {
+  let name = document.getElementById('posName').value.trim();
+  const st = await fetch(API + '/api/eval/state').then(d => d.json()).catch(() => null);
+  const stones = st && st.state && st.state.stones ? st.state.stones : [];
+  if (!stones.length) { alert('当前没有对弈局面'); return; }
+  // 📛 自动后缀: 权重+sim+执色+Rapfi depth (2026-09-09 用户) — 便于事后区分棋谱来源
+  const cfg = (st.state && st.state.config) || {};
+  const wShort = (cfg.weight || '').replace('|', '_').replace('weights_it', 'it').replace('.pt', '');
+  const colorTag = cfg.we_black ? '黑' : '白';
+  const suffix = `_Rapfi_${wShort || '?'}_sim${cfg.sim ?? '?'}_d${cfg.depth ?? '?'}_${colorTag}`;
+  // 若用户输入带空格或未输入 → 直接给唯一名; 否则拼接后缀
+  const finalName = name ? (name + suffix) : ('Rapfi测评_' + new Date().toISOString().slice(5, 19).replace(/[T:]/g, '').slice(0, 12) + suffix);
+  const r = await fetch(API + '/api/positions/save', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: finalName, tag: 'Rapfi测评', stones})}).then(d => d.json());
+  if (r.ok) {
+    document.getElementById('posName').value = '';
+    document.getElementById('status').textContent = '✅ 棋谱「' + finalName + '」已保存';
+  } else {
+    alert('保存失败: ' + (r.error || '未知错误'));
+  }
+}
+
+function resetBtns() {
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnStop').style.display = 'none';
+}
+</script>
+</body>
+</html>

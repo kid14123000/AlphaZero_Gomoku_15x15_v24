@@ -1,0 +1,5 @@
+__pycache__/
+gomoku_checkpoints_v24/
+*.log
+*.pkl
+*.pt

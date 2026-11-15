@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>五子棋 9×9 · v16 GN 试验</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #0b1220; color: #e2e8f0; min-height: 100vh; }
+  nav { display: flex; gap: 8px; padding: 14px 16px 0; flex-wrap: wrap; }
+  nav a { color: #7dd3fc; text-decoration: none; font-size: 13px; padding: 6px 14px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+  nav a:hover { background: #1e293b; }
+  nav a.active { background: #1e293b; border-color: #7dd3fc; color: #e2e8f0; }
+  nav a i { margin-right: 5px; }
+  .container { display: flex; gap: 16px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+  .board-wrapper { position: relative; background: #dcb35c; border-radius: 8px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,.5), inset 0 0 30px rgba(0,0,0,.15); flex-shrink: 0; }
+  canvas#board { display: block; cursor: pointer; width: 100%; height: auto; max-width: 480px; }
+  .thinking-overlay { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.3); border-radius: 8px; z-index: 10; justify-content: center; align-items: center; }
+  .thinking-overlay.show { display: flex; }
+  .spinner { width: 48px; height: 48px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .sidebar { width: 280px; color: #e8d5b0; flex-shrink: 0; }
+  .sidebar h1 { font-size: 20px; margin-bottom: 4px; letter-spacing: 1px; }
+  .sidebar .sub { font-size: 12px; color: #a08050; margin-bottom: 14px; }
+  .panel { background: #3e2818; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .panel h3 { font-size: 14px; color: #c8a870; margin-bottom: 8px; border-bottom: 1px solid #5a3820; padding-bottom: 5px; }
+  .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .row label { font-size: 13px; min-width: 44px; color: #b89870; }
+  .row select, .row input { flex: 1; padding: 5px 8px; border: 1px solid #5a3820; border-radius: 4px; background: #2c1810; color: #e8d5b0; font-size: 13px; outline: none; }
+  .row select:focus, .row input:focus { border-color: #dcb35c; }
+  .row select option { background: #2c1810; }
+  .btn { width: 100%; padding: 10px; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; font-weight: 600; transition: all .2s; }
+  .btn-start { background: #dcb35c; color: #2c1810; }
+  .btn-start:hover { background: #e8c56c; transform: translateY(-1px); }
+  .btn-start:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  .btn-stop { background: #8b3a3a; color: #f0d0b0; margin-top: 6px; }
+  .btn-stop:hover { background: #a04444; }
+  .status { font-size: 14px; padding: 6px 10px; background: #2c1810; border-radius: 6px; margin-top: 6px; min-height: 34px; display: flex; align-items: center; gap: 6px; }
+  .status .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot-black { background: radial-gradient(circle at 35% 35%, #555, #111); }
+  .dot-white { background: radial-gradient(circle at 35% 35%, #fff, #ccc); border: 1px solid #888; }
+  .status .winner { font-weight: 700; font-size: 15px; }
+  .winner-black { color: #ddd; }
+  .winner-white { color: #fff; }
+  .history { max-height: 160px; overflow-y: auto; font-size: 12px; color: #a08050; }
+  .history::-webkit-scrollbar { width: 4px; }
+  .history::-webkit-scrollbar-thumb { background: #5a3820; border-radius: 2px; }
+  .history .hrow { display: flex; gap: 4px; padding: 2px 0; }
+  .history .hrow .idx { color: #705030; min-width: 24px; }
+  .history .hrow .b { color: #ccc; }
+  .history .hrow .w { color: #f0d0b0; }
+  .note { font-size: 11px; color: #94a3b8; line-height: 1.6; margin-top: 6px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">🏠 15×15 对弈</a>
+  <a href="/game9" class="active">🎯 9×9 对弈 (v16 GN)</a>
+  <a href="/eval">⚔️ 棋力测评</a>
+  <a href="/dashboard">📊 训练监控</a>
+  <a href="/mcts">🧠 MCTS 分析</a>
+  <a href="/network">🔬 网络前向</a>
+  <a href="/study">📖 摆谱</a>
+  <a href="/evolution">📈 演化</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+
+<div class="container">
+  <div class="board-wrapper">
+    <canvas id="board" width="480" height="480"></canvas>
+    <div class="thinking-overlay" id="thinking"><div class="spinner"></div></div>
+  </div>
+
+  <div class="sidebar">
+    <h1>🎯 9×9 五子棋</h1>
+    <div class="sub">v16 GN 试验版 · 加载 9×9 权重</div>
+
+    <div class="panel">
+      <h3>⚙️ 权重</h3>
+      <div class="row">
+        <label>版本</label>
+        <select id="verSel" onchange="loadWeights()">
+          <option value="v16">v16 (GN 9×9)</option>
+          <option value="v17">v17 (BN 9×9 对照)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>代</label>
+        <select id="genSel"><option>加载中…</option></select>
+      </div>
+      <div class="row">
+        <label>模拟</label>
+        <input type="number" id="simCount" value="100" min="1" max="800">
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>👥 执棋</h3>
+      <div class="row">
+        <label>黑棋</label>
+        <select id="blackType">
+          <option value="human">人</option>
+          <option value="ai">AI (v16)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>白棋</label>
+        <select id="whiteType">
+          <option value="ai">AI (v16)</option>
+          <option value="human">人</option>
+        </select>
+      </div>
+      <button class="btn btn-start" id="btnStart" onclick="startGame()">▶ 开始</button>
+      <button class="btn btn-stop" id="btnStop" onclick="stopGame()" style="display:none">⏹ 停止</button>
+    </div>
+
+    <div class="panel">
+      <h3>📋 状态</h3>
+      <div class="status" id="status">选择权重后开始</div>
+      <div class="history" id="history"></div>
+    </div>
+
+    <div class="note">💡 9×9 是 GN 快速验证平台：观察 v16 的 policy 是否聚焦（熵 < 4.394 越多越聚焦）、威胁识别是否成型。MCTS 热力 = 当前局面 Q 值。</div>
+  </div>
+</div>
+
+<script>
+const BOARD_SIZE = 9;
+const COLS = 480, PADDING = 30, CELL = (COLS - 2 * PADDING) / (BOARD_SIZE - 1);
+const LETTERS = 'ABCDEFGHI';
+const API = '';
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+let state = null;
+let gameRunning = false;
+let aiThinking = false;
+let aiTimer = null;
+let _weights = [];
+
+function getConfig() {
+  return {
+    black_type: document.getElementById('blackType').value,
+    white_type: document.getElementById('whiteType').value,
+    sim_count: parseInt(document.getElementById('simCount').value) || 100,
+  };
+}
+
+function currentWeight() {
+  return document.getElementById('genSel').value;
+}
+
+function showStatus(msg) {
+  const el = document.getElementById('status');
+  if (typeof msg === 'string') el.innerHTML = msg;
+  else if (msg) {
+    if (msg.over) {
+      const w = msg.winner;
+      el.innerHTML = (w === 1 ? '<span class="dot dot-black"></span><span class="winner winner-black">黑方胜</span>' :
+                      w === -1 ? '<span class="dot dot-white"></span><span class="winner winner-white">白方胜</span>' :
+                      '平局') + ` · ${msg.move_count} 手`;
+    } else {
+      const cur = msg.current;
+      el.innerHTML = (cur === 1 ? '<span class="dot dot-black"></span>黑棋' : '<span class="dot dot-white"></span>白棋') +
+        ` 回合 · 第 ${msg.move_count + 1} 手`;
+    }
+  }
+  const h = document.getElementById('history');
+  if (msg && msg.moves) {
+    h.innerHTML = msg.moves.map((m, i) =>
+      `<div class="hrow"><span class="idx">${i + 1}</span><span class="${i % 2 === 0 ? 'b' : 'w'}">${LETTERS[m.c]}${BOARD_SIZE - m.r}</span></div>`).join('');
+  }
+}
+
+// ── 绘制棋盘（棋子/坐标/热力全在交叉点） ──
+function drawBoard(stones, lastMove, valueMap) {
+  ctx.clearRect(0, 0, COLS, COLS);
+  // 木纹
+  const grad = ctx.createLinearGradient(0, 0, COLS, COLS);
+  grad.addColorStop(0, '#dcb35c'); grad.addColorStop(.5, '#c8a04c'); grad.addColorStop(1, '#dcb35c');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, COLS, COLS);
+  ctx.strokeStyle = 'rgba(160,120,60,.15)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 60; i++) {
+    const y = Math.random() * COLS;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(COLS, y + (Math.random() - .5) * 8); ctx.stroke();
+  }
+  // 网格（交叉点 PADDING + i*CELL）
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = 1.2;
+  for (let i = 0; i < BOARD_SIZE; i++) {
+    const p = PADDING + i * CELL;
+    ctx.beginPath(); ctx.moveTo(PADDING, p); ctx.lineTo(PADDING + (BOARD_SIZE - 1) * CELL, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, PADDING); ctx.lineTo(p, PADDING + (BOARD_SIZE - 1) * CELL); ctx.stroke();
+  }
+  ctx.lineWidth = 2; ctx.strokeRect(PADDING, PADDING, (BOARD_SIZE - 1) * CELL, (BOARD_SIZE - 1) * CELL);
+  // 星位
+  ctx.fillStyle = '#3a2818';
+  const stars = [[2,2],[2,6],[4,4],[6,2],[6,6]];
+  for (const [r, c] of stars) {
+    ctx.beginPath(); ctx.arc(PADDING + c * CELL, PADDING + r * CELL, 4, 0, Math.PI * 2); ctx.fill();
+  }
+  // Q 值热力（交叉点圆形，蓝→红）
+  if (valueMap) {
+    const occupied = new Set();
+    if (stones) for (const s of stones) occupied.add(s.r + ',' + s.c);
+    let qMin = -1, qMax = 1;
+    for (let r = 0; r < BOARD_SIZE; r++) for (let c = 0; c < BOARD_SIZE; c++) {
+      if (occupied.has(r + ',' + c)) continue;
+      const q = valueMap[r] && valueMap[r][c];
+      if (q != null) { qMin = Math.min(qMin, q); qMax = Math.max(qMax, q); }
+    }
+    const qRange = Math.max(0.001, qMax - qMin);
+    const qMid = (qMax + qMin) / 2;
+    for (let r = 0; r < BOARD_SIZE; r++) for (let c = 0; c < BOARD_SIZE; c++) {
+      if (occupied.has(r + ',' + c)) continue;
+      const q = valueMap[r] && valueMap[r][c];
+      if (q == null) continue;
+      const x = PADDING + c * CELL, y = PADDING + r * CELL;
+      const norm = (q - qMin) / qRange;
+      const rv = Math.round(255 * Math.max(0, Math.min(1, (norm - 0.5) * 2 + 0.5)));
+      const bv = Math.round(255 * Math.max(0, Math.min(1, (0.5 - norm) * 2 + 0.5)));
+      const gv = Math.round(180 * (1 - Math.abs(norm - 0.5) * 2));
+      const alpha = 0.15 + 0.35 * Math.abs(norm - 0.5) * 2;
+      ctx.beginPath(); ctx.arc(x, y, CELL * 0.45, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${rv},${gv},${bv},${alpha})`; ctx.fill();
+      if (Math.abs(q) > 0.05) {
+        ctx.fillStyle = q > 0 ? 'rgba(200,60,60,0.7)' : 'rgba(60,100,200,0.7)';
+        ctx.font = `bold ${Math.max(9, CELL * 0.3)}px sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText((q > 0 ? '+' : '') + q.toFixed(2), x, y + 0.5);
+      }
+    }
+  }
+  // 坐标标注
+  ctx.fillStyle = '#5a3820'; ctx.font = '11px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < BOARD_SIZE; i++) {
+    const p = PADDING + i * CELL;
+    ctx.fillText(LETTERS[i], p, 12); ctx.fillText(LETTERS[i], p, COLS - 12);
+    ctx.fillText(BOARD_SIZE - i, 12, p); ctx.fillText(BOARD_SIZE - i, COLS - 12, p);
+  }
+  // 棋子（交叉点）
+  if (stones) {
+    for (const s of stones) {
+      const x = PADDING + s.c * CELL, y = PADDING + s.r * CELL;
+      const radius = CELL * .43;
+      const isBlack = s.p === 1;
+      ctx.beginPath(); ctx.arc(x + 2, y + 2, radius, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fill();
+      const g = ctx.createRadialGradient(x - radius * .3, y - radius * .3, radius * .1, x, y, radius);
+      if (isBlack) {
+        g.addColorStop(0, '#666'); g.addColorStop(1, '#111');
+      } else {
+        g.addColorStop(0, '#fff'); g.addColorStop(1, '#bbb');
+      }
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = g; ctx.fill();
+      if (isBlack) { ctx.strokeStyle = '#000'; ctx.lineWidth = .5; ctx.stroke(); }
+    }
+    // 最后一手标记
+    const last = stones[stones.length - 1];
+    if (last) {
+      const x = PADDING + last.c * CELL, y = PADDING + last.r * CELL;
+      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = '#ef4444'; ctx.fill();
+    }
+  }
+}
+
+// ── 点击：找最近交叉点（照 15×15 首页模式） ──
+canvas.addEventListener('click', handleCanvasClick);
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  handleCanvasClick({ clientX: touch.clientX, clientY: touch.clientY });
+}, { passive: false });
+
+async function handleCanvasClick(e) {
+  if (!gameRunning || aiThinking) return;
+  if (state && state.over) { showStatus('游戏已结束，点「开始」重新开局'); return; }
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = COLS / rect.width, scaleY = COLS / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top) * scaleY;
+  let minD = CELL * .6, hitR = -1, hitC = -1;
+  for (let r = 0; r < BOARD_SIZE; r++) for (let c = 0; c < BOARD_SIZE; c++) {
+    const px = PADDING + c * CELL, py = PADDING + r * CELL;
+    const d = Math.hypot(mx - px, my - py);
+    if (d < minD) { minD = d; hitR = r; hitC = c; }
+  }
+  if (hitR < 0) return;
+  const cur = state ? state.current : 1;
+  const cfg = getConfig();
+  const isHuman = (cur === 1 && cfg.black_type === 'human') || (cur === -1 && cfg.white_type === 'human');
+  if (!isHuman) { showStatus('当前是 AI 回合，请稍候'); return; }
+  await doMove(hitR, hitC);
+}
+
+// ── 走棋（本地立即画子 → 后端 → 刷新） ──
+async function doMove(row, col) {
+  const player = state ? state.current : 1;
+  const nextN = state ? state.move_count + 1 : 1;
+  const prevStones = (state && state.stones) ? [...state.stones] : [];
+  drawBoard([...prevStones, {r: row, c: col, p: player, n: nextN}], {r: row, c: col}, state ? state.value_map : null);
+  showStatus('🤔 等待 AI 响应…');
+  aiThinking = true;
+  document.getElementById('thinking').classList.add('show');
+  try {
+    const r = await fetch(API + '/api/play', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({row, col})
+    }).then(d => d.json());
+    document.getElementById('thinking').classList.remove('show');
+    aiThinking = false;
+    if (!r.ok) {
+      // 失败回滚
+      drawBoard(prevStones, null, state ? state.value_map : null);
+      showStatus('❌ ' + (r.error || '走棋失败'));
+      return;
+    }
+    state = r.state;
+    drawBoard(state.stones, null, state.value_map);
+    showStatus(state);
+    if (state.over) gameRunning = false;
+  } catch (err) {
+    document.getElementById('thinking').classList.remove('show');
+    aiThinking = false;
+    showStatus('❌ 网络错误');
+  }
+}
+
+// ── 权重加载：按所选版本 (v16 GN / v17 BN, 都是 9×9) ──
+async function loadWeights() {
+  try {
+    const r = await fetch(API + '/api/weights').then(d => d.json());
+    const ver = document.getElementById('verSel').value;
+    const ws = (r.weights || []).filter(w => w.version === ver);
+    _weights = ws;
+    const genSel = document.getElementById('genSel');
+    const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+    ws.sort((a, b) => itNum(b.file) - itNum(a.file));
+    genSel.innerHTML = ws.length ? ws.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('')
+                                 : '<option value="">暂无 ' + ver + ' 权重 (先同步)</option>';
+  } catch (e) { console.error(e); }
+}
+
+// ── 开始/停止 ──
+async function startGame() {
+  const w = currentWeight();
+  if (!w) { alert('请先选择 v16 权重'); return; }
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnStop').style.display = '';
+  const cfg = getConfig();
+  const payload = {
+    board_size: 9,
+    black_type: cfg.black_type, black_weight: w,
+    white_type: cfg.white_type, white_weight: w,
+    sim_count: cfg.sim_count, greedy: true,
+    value_sim: Math.min(400, cfg.sim_count)
+  };
+  try {
+    const r = await fetch(API + '/api/start', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(d => d.json());
+    if (!r.ok) { alert('启动失败: ' + (r.error || '')); resetBtns(); return; }
+    state = r.state;
+    gameRunning = true;
+    drawBoard(state.stones, null, state.value_map);
+    showStatus(state);
+    const bothAI = cfg.black_type === 'ai' && cfg.white_type === 'ai';
+    if (bothAI) startAutoAI();
+  } catch (err) { alert('启动失败: ' + err); resetBtns(); }
+}
+
+function stopGame() {
+  gameRunning = false;
+  if (aiTimer) { clearInterval(aiTimer); aiTimer = null; }
+  resetBtns();
+}
+
+function resetBtns() {
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnStop').style.display = 'none';
+  document.getElementById('thinking').classList.remove('show');
+  aiThinking = false;
+}
+
+// AI vs AI 自动轮询
+function startAutoAI() {
+  if (aiTimer) clearInterval(aiTimer);
+  aiTimer = setInterval(async () => {
+    if (!gameRunning || aiThinking) return;
+    aiThinking = true;
+    document.getElementById('thinking').classList.add('show');
+    try {
+      const r = await fetch(API + '/api/play', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
+      }).then(d => d.json());
+      document.getElementById('thinking').classList.remove('show');
+      aiThinking = false;
+      if (r.ok && r.state) {
+        state = r.state;
+        drawBoard(state.stones, null, state.value_map);
+        showStatus(state);
+        if (state.over) stopGame();
+      }
+    } catch (err) {
+      document.getElementById('thinking').classList.remove('show');
+      aiThinking = false;
+    }
+  }, 1500);
+}
+
+loadWeights();
+</script>
+</body>
+</html>

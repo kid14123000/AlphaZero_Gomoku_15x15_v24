@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>🔬 网络前向可视化</title>
+<style>
+body{background:#0b1220;color:#e2e8f0;font-family:-apple-system,'PingFang SC',sans-serif;margin:0;padding:16px}
+nav{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+nav a{color:#7dd3fc;text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid #334155;border-radius:6px;background:#0f172a}
+nav a:hover{background:#1e293b}
+nav a.active{background:#1e293b;border-color:#7dd3fc;color:#e2e8f0}
+h1{font-size:19px;margin:4px 0}
+.sec{border:1px solid #334155;border-radius:10px;padding:14px;margin:12px 0;background:#0f172a}
+.sec-title{font-weight:bold;color:#f1f5f9;margin-bottom:10px;font-size:14px}
+.grid{display:flex;flex-wrap:wrap;gap:10px}
+.card{border:1px solid #334155;border-radius:8px;padding:8px;background:#0f172a;width:180px}
+/* 传导链卡片: 统一高度 + 内容垂直居中 (标题/图/参数 在一条水平线上) */
+.chain-card{display:flex;flex-direction:column;align-items:center;justify-content:center;height:400px;width:236px;overflow:hidden;text-align:center}
+.card .nm{font-size:12px;color:#f1f5f9;font-weight:bold}
+.card .st{font-size:10px;color:#64748b;margin:2px 0}
+.mono{font-family:Menlo,monospace}
+.flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}
+.flow .box{border:1px solid #475569;border-radius:6px;padding:6px 10px;background:#1e293b;color:#7dd3fc}
+.flow .arr{color:#64748b}
+.flow .box.pol{border-color:#f59e0b;color:#fbbf24}
+.flow .box.val{border-color:#10b981;color:#34d399}
+.hot-v{color:#fbbf24;font-size:15px;font-weight:bold}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin:2px;background:#334155;color:#e2e8f0}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard"><i>📊</i> 训练监控</a>
+  <a href="/network" class="active"><i>🧠</i> 网络前向</a>
+  <a href="/mcts"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution"><i>🧬</i> 开局演化</a>
+  <a href="/replay"><i>🗂</i> 自对弈数据</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+<h1>🔬 v6 网络前向计算可视化</h1>
+<div style="color:#94a3b8;font-size:12px;margin:6px 0" id="meta">摆好局面 → 选权重 → 送入网络前向</div>
+
+<!-- 摆谱板块 -->
+<div class="sec" style="border-color:#7c3aed">
+<div class="sec-title">🎨 摆谱: 摆局面 → 选权重 → 送入网络观察每层加工</div>
+<div style="display:flex;gap:18px;flex-wrap:wrap">
+  <div>
+    <canvas id="setupCanvas" width="380" height="380" style="border:1px solid #334155;cursor:pointer;display:block;align-self:flex-start"></canvas>
+    <div style="font-size:11px;color:#64748b;margin-top:4px">点击棋盘放子 · 数字=落子顺序 · 当前: <b id="curColorLabel" style="color:#fbbf24">黑</b></div>
+  </div>
+  <div style="flex:1;min-width:260px">
+    <div style="margin:4px 0"><label style="font-size:12px">落子颜色:
+      <button onclick="setColor(1)" id="btnBlack" style="background:#111;color:#fff;border:2px solid #fbbf24;border-radius:6px;padding:5px 14px;cursor:pointer">● 黑</button>
+      <button onclick="setColor(-1)" id="btnWhite" style="background:#f8fafc;color:#111;border:2px solid #64748b;border-radius:6px;padding:5px 14px;cursor:pointer">○ 白</button>
+      <label style="font-size:11px;margin-left:8px;color:#94a3b8"><input type="checkbox" id="autoAlt" checked onchange="toggleAuto()"> 自动轮换黑白</label>
+    </label></div>
+    <div style="margin:4px 0">
+      <button onclick="undoStone()" style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:5px 16px;cursor:pointer">↩ 回退</button>
+      <button onclick="redoStone()" style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:5px 16px;cursor:pointer">↪ 前进</button>
+      <button onclick="clearStones()" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:6px;padding:5px 14px;cursor:pointer">🗑 清空</button>
+    </div>
+    <div style="margin:4px 0"><label style="font-size:12px">权重:
+      <select id="weightVer" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:80px"></select>
+      <select id="weightSelect" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:150px"></select>
+    </label></div>
+    <div style="margin:8px 0">
+      <button onclick="load()" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:8px 22px;font-size:14px;cursor:pointer">▶ 送入网络前向</button>
+      <button onclick="useGameBoard()" style="background:#1e293b;color:#7dd3fc;border:1px solid #475569;border-radius:8px;padding:8px 14px;cursor:pointer;margin-left:8px">📋 取当前对弈局面</button>
+    </div>
+    <div style="margin:6px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <input id="posName" placeholder="局面名称" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;width:110px">
+      <input id="ansInput" placeholder="🎯推荐选点 F8,J10" title="出题: 你认为该局面正确的选点(逗号分隔, 按优先级)" style="background:#1e293b;color:#fbbf24;border:1px solid #b45309;border-radius:6px;padding:5px 8px;width:150px">
+      <input id="scoreInput" placeholder="🎯评分" title="当前玩家视角胜率(-1~1), 用于将来测value准确率" style="background:#1e293b;color:#34d399;border:1px solid #059669;border-radius:6px;padding:5px 8px;width:70px" type="number" min="-1" max="1" step="0.05">
+      <button onclick="savePosition()" style="background:#1e293b;color:#34d399;border:1px solid #475569;border-radius:6px;padding:5px 10px;cursor:pointer">💾 保存</button>
+      <button onclick="runQuiz()" title="批量评估所有出题局面在所选权重下的policy准确率" style="background:#1e293b;color:#fbbf24;border:1px solid #b45309;border-radius:6px;padding:5px 10px;cursor:pointer">📝 批量评估出题</button>
+      <select id="posSelect" onmousedown="this.value=''" onchange="loadPosition()" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:170px"></select>
+      <button onclick="loadPosition()" style="background:#1e293b;color:#fbbf24;border:1px solid #475569;border-radius:6px;padding:5px 10px;cursor:pointer">📥 加载</button>
+      <button onclick="deletePosition()" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:6px;padding:5px 10px;cursor:pointer">🗑</button>
+      <span id="posCount" style="font-size:11px;color:#64748b"></span>
+    </div>
+    <div id="quizResult" style="font-size:12px;color:#e2e8f0;margin-top:8px;max-height:420px;overflow:auto"></div>
+    <div id="setupInfo" style="font-size:12px;color:#94a3b8;margin-top:6px">尚未摆子 · 空盘直接观察网络初始响应</div>
+    <div style="margin-top:10px">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📜 落子次序 <button id="copyHistBtn" onclick="copyHistory()" style="background:#1e293b;color:#7dd3fc;border:1px solid #475569;border-radius:5px;padding:2px 10px;font-size:11px;cursor:pointer;margin-left:6px">📋 一键复制</button></div>
+      <div id="setupHistory" style="max-height:110px;overflow-y:auto;font-size:12px;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;background:#0f172a;line-height:1.5"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ① 双头输出(结果) -->
+<div class="sec">
+<div class="sec-title">① Policy / Value 输出</div>
+<div style="display:flex;gap:20px;flex-wrap:wrap">
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">Policy: 每个位置的落子概率 (越亮越可能)</div>
+    <canvas id="polCanvas" width="320" height="320" style="border:1px solid #334155"></canvas>
+    <div id="polTop" style="font-size:12px;margin-top:6px"></div>
+  </div>
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">Value 头: 当前玩家胜率</div>
+    <div style="border:1px solid #334155;border-radius:8px;padding:16px;background:#1e293b;width:200px;text-align:center">
+      <div style="font-size:11px;color:#94a3b8">value (当前玩家视角)</div>
+      <div class="hot-v" id="valBox">--</div>
+      <div style="font-size:10px;color:#64748b" id="valNote"></div>
+    </div>
+  </div>
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">Value 热力图: 每个空点落子后的对方视角 value (低=对方难受=当前玩家最佳)</div>
+    <canvas id="valMapCanvas" width="320" height="320" style="border:1px solid #334155"></canvas>
+    <div id="valMapTop" style="font-size:12px;margin-top:6px"></div>
+  </div>
+</div>
+</div>
+
+
+<!-- ①b 双头传导链 -->
+<div class="sec" style="border-color:#334155">
+<div class="sec-title">🔗 Policy / Value 头传导链 (逐部件过程拆解)</div>
+<div style="font-size:12px;color:#94a3b8;margin-bottom:8px">Policy: 主干特征(128ch) → conv(128→1,k3) → BN → ReLU → softmax → 225维概率</div>
+<div id="policyChain" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
+<div style="font-size:12px;color:#94a3b8;margin:14px 0 8px">Value: 主干特征(128ch) → conv(128→1,k3) → BN → ReLU → fc(225→1) → tanh → 胜率标量</div>
+<div id="valueChain" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
+</div>
+
+<!-- ② 网络示意图 -->
+<div class="sec">
+<div class="sec-title">② 网络结构示意图</div>
+<div class="flow">
+  <div class="box">棋盘输入<br><span style="font-size:10px">(1,15,15)</span></div>
+  <div class="arr">→</div>
+  <div class="box">conv_input 1→128<br><span style="font-size:10px">3×3 + BN + ReLU</span></div>
+  <div class="arr">→</div>
+  <div class="box">8×ResBlock 128→128<br><span style="font-size:10px">共享主干(特征提取)</span></div>
+  <div class="arr">→</div>
+  <div class="box pol">policy头<br><span style="font-size:10px">conv(128→1,k3)→BN→softmax(225)</span></div>
+  <div class="arr">→</div>
+  <div class="box" style="border-color:#f59e0b;color:#fbbf24">每个位置落子概率</div>
+  <div style="width:8px"></div>
+  <div class="box val">value头<br><span style="font-size:10px">conv(128→1,k3)→BN→fc(225→1)→tanh</span></div>
+  <div class="arr">→</div>
+  <div class="box" style="border-color:#10b981;color:#34d399">当前玩家胜率</div>
+</div>
+</div>
+
+<!-- ③ 加工过程 -->
+<div class="sec">
+<div class="sec-title">③ 加工过程：棋盘数字版 → canonical 数字向量 → 逐层特征热力图</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">棋盘数字版 (黑=+1 白=-1 空=0 · 实际颜色视角)</div>
+    <div id="numBoard" class="mono" style="font-size:10px;line-height:1.25;color:#94a3b8;max-height:280px;overflow:auto;border:1px solid #334155;padding:4px;border-radius:4px"></div>
+  </div>
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">canonical 数字向量 (当前玩家=+1/对方=-1/空=0)</div>
+    <div id="vecBox" class="mono" style="font-size:10px;line-height:1.25;color:#94a3b8;max-height:280px;overflow:auto;border:1px solid #334155;padding:4px;border-radius:4px"></div>
+  </div>
+</div>
+<div style="margin-top:12px" id="layerCards"></div>
+</div>
+
+<!-- ④ 权重参数分布 -->
+<div class="sec">
+<div class="sec-title">④ 权重参数分布 (每层 weight 直方图, 看是否死神经元/塌缩)</div>
+<div style="display:flex;gap:20px;flex-wrap:wrap">
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">层选择</div>
+    <select id="wLayer" onchange="drawWeightLayer()" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;max-width:260px"></select>
+    <canvas id="wHist" width="320" height="170" style="border:1px solid #334155;margin-top:6px"></canvas>
+    <div id="wStat" style="font-size:11px;color:#94a3b8;margin-top:4px"></div>
+  </div>
+  <div>
+    <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">conv_input 卷积核 (4输入通道 × 3×3 均值)</div>
+    <canvas id="wKernel" width="130" height="170" style="border:1px solid #334155"></canvas>
+    <div style="font-size:10px;color:#64748b;margin-top:4px">每行=一个输入通道的 3×3 核均值</div>
+  </div>
+</div>
+</div>
+
+<!-- ⑤ 网络计算图 -->
+<div class="sec">
+<div class="sec-title">⑤ 网络计算图 (数据流向 + 每层输入/输出形状)</div>
+<div id="graphBox" style="overflow:auto;border:1px solid #334155;border-radius:8px;background:#0f172a;padding:10px"></div>
+</div>
+
+<script>
+const API = '';
+// ── 摆谱状态 (同 MCTS 页) ──
+const LETTERS = 'ABCDEFGHIJKLMNO';
+const SZ = 380;
+const SP = 24;
+const SC = (SZ - SP * 2) / 14;
+let myStones = [];
+let redoStack = [];   // 前进(redo)栈 (2026-08-28)
+let curColor = 1;
+
+// 通用棋盘绘制: 任意尺寸 canvas 画当前局面 (摆谱棋盘 + 加工过程棋盘布局共用)
+function drawBoardCommon(cv) {
+  const W = cv.width;
+  const pad = Math.max(18, Math.round(W * 0.063));
+  const cell = (W - pad * 2) / 14;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, W, W);
+  const grad = ctx.createLinearGradient(0, 0, W, W);
+  grad.addColorStop(0, '#dcb35c'); grad.addColorStop(.5, '#c8a04c'); grad.addColorStop(1, '#dcb35c');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, W, W);
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = Math.max(1, W * 0.004);
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14 * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14 * cell); ctx.stroke();
+  }
+  ctx.lineWidth = 2; ctx.strokeRect(pad, pad, 14 * cell, 14 * cell);
+  ctx.fillStyle = '#3a2818';
+  [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]].forEach(([r,c]) => {
+    const x = pad + c * cell, y = pad + r * cell;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.18, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.fillStyle = '#5a3820'; ctx.font = Math.max(9, Math.round(W * 0.03)) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell;
+    ctx.fillText(LETTERS[i], p, pad - 11); ctx.fillText(LETTERS[i], p, W - pad + 11);
+    ctx.fillText(15 - i, pad - 11, p); ctx.fillText(15 - i, W - pad + 11, p);
+  }
+  for (const s of myStones) {
+    const x = pad + s.c * cell, y = pad + s.r * cell;
+    const rad = cell * .43;
+    const isB = s.v === 1;
+    ctx.beginPath(); ctx.arc(x + 2, y + 2, rad, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fill();
+    const g = ctx.createRadialGradient(x - rad*.3, y - rad*.3, rad*.1, x, y, rad);
+    if (isB) { g.addColorStop(0,'#666'); g.addColorStop(.6,'#222'); g.addColorStop(1,'#000'); }
+    else { g.addColorStop(0,'#fff'); g.addColorStop(.6,'#eee'); g.addColorStop(1,'#bbb'); }
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = isB ? 0 : .5; ctx.strokeStyle = '#999'; ctx.stroke();
+    ctx.fillStyle = isB ? '#ccc' : '#333';
+    ctx.font = `bold ${cell * .32}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(s.n, x, y + 0.5);
+  }
+}
+function drawSetupBoard() {
+  const cv = document.getElementById('setupCanvas');
+  drawBoardCommon(cv);
+  const nb = myStones.filter(s => s.v === 1).length;
+  const nw = myStones.length - nb;
+  const toMove = nb === nw ? '黑' : '白';
+  document.getElementById('setupInfo').textContent =
+    `已摆 ${myStones.length} 子 (黑${nb}/白${nw}) · 轮到 ${toMove} 走`;
+  document.getElementById('setupHistory').innerHTML = myStones.length === 0
+    ? '<span style="color:#64748b">尚无棋子</span>'
+    : myStones.map((s, i) =>
+        `<div style="display:flex;gap:6px;padding:1px 0"><span style="color:#64748b;min-width:20px">${i + 1}.</span>` +
+        `<span style="color:${s.v === 1 ? '#f8fafc' : '#38bdf8'}">${s.v === 1 ? '●' : '○'}</span>` +
+        `<span>${fmtCoord(s.r, s.c)}</span></div>`).join('');
+}
+// 数字版棋盘: 实际颜色视角 (黑=+1 白=-1 空=0), 与 canonical(当前玩家视角) 并列对照
+function drawNumBoard() {
+  const g = {};
+  myStones.forEach(x => { g[x.r * 15 + x.c] = x.v; });
+  let html = '';
+  for (let row = 0; row < 15; row++) {
+    for (let col = 0; col < 15; col++) {
+      const v = g[row * 15 + col] || 0;
+      html += (v === 0 ? '·' : (v > 0 ? '<span style="color:#fbbf24">+</span>' : '<span style="color:#38bdf8">-</span>'));
+    }
+    html += '<br>';
+  }
+  document.getElementById('numBoard').innerHTML = html;
+}
+
+function setupClick(e) {
+  const cv = document.getElementById('setupCanvas');
+  const rect = cv.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (SZ / rect.width);
+  const my = (e.clientY - rect.top) * (SZ / rect.height);
+  let minD = SC * .6, hitR = -1, hitC = -1;
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const d = Math.hypot(mx - (SP + c * SC), my - (SP + r * SC));
+    if (d < minD) { minD = d; hitR = r; hitC = c; }
+  }
+  if (hitR < 0) return;
+  if (myStones.some(s => s.r === hitR && s.c === hitC)) return;
+  redoStack = [];   // 新落子作废前进历史
+  myStones.push({r: hitR, c: hitC, v: curColor, n: myStones.length + 1});
+  if (document.getElementById('autoAlt').checked) { curColor = -curColor; setColor(curColor); }
+  drawSetupBoard();
+}
+
+function setColor(v) {
+  curColor = v;
+  document.getElementById('curColorLabel').textContent = v === 1 ? '黑' : '白';
+  document.getElementById('curColorLabel').style.color = v === 1 ? '#fbbf24' : '#38bdf8';
+  document.getElementById('btnBlack').style.borderColor = v === 1 ? '#fbbf24' : '#64748b';
+  document.getElementById('btnWhite').style.borderColor = v === -1 ? '#fbbf24' : '#64748b';
+}
+function toggleAuto() {
+  const nb = myStones.filter(s => s.v === 1).length;
+  const nw = myStones.length - nb;
+  if (document.getElementById('autoAlt').checked) setColor(nb === nw ? 1 : -1);
+}
+function undoStone() {
+  if (myStones.length === 0) return;
+  redoStack.push(myStones.pop());   // 回退的步进 redo 栈, 可前进恢复
+  if (document.getElementById('autoAlt').checked) { curColor = -curColor; setColor(curColor); }
+  drawSetupBoard();
+}
+function copyHistory() {
+  if (!myStones.length) { alert('棋盘还没有棋子'); return; }
+  const txt = myStones.map((x, i) => `${i + 1}.${x.v === 1 ? '黑' : '白'}${fmtCoord(x.r, x.c)}`).join('  ');
+  const done = () => {
+    const b = document.getElementById('copyHistBtn');
+    b.textContent = '✓ 已复制'; b.style.color = '#34d399';
+    setTimeout(() => { b.textContent = '📋 一键复制'; b.style.color = '#7dd3fc'; }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(done).catch(() => fallbackCopy(txt, done));
+  } else fallbackCopy(txt, done);
+}
+function fallbackCopy(txt, done) {
+  const ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  document.execCommand('copy'); document.body.removeChild(ta); done();
+}
+
+function redoStone() {
+  if (!redoStack.length) return;
+  myStones.push(redoStack.pop());
+  if (document.getElementById('autoAlt').checked) {
+    curColor = -curColor;
+    setColor(curColor);
+  }
+  drawSetupBoard();
+}
+
+function clearStones() { myStones = []; redoStack = []; setColor(1); drawSetupBoard(); }
+
+// 网络前向完成后在摆谱棋盘上叠加 policy 选点标注: top5[0]=网络最想下(金色★) + 其余排名圈(深→浅)
+// 用户落子/撤销/清空/取对弈局面会触发 drawSetupBoard() 全量重绘 → 标注自然消失
+function drawSetupMarkers(topArr) {
+  const top = topArr || [];
+  if (!top.length) return;
+  const cv = document.getElementById('setupCanvas');
+  const ctx = cv.getContext('2d');
+  const occupied = new Set(myStones.map(s => s.r * 15 + s.c));
+  const cands = top.filter(t => t.r !== undefined && t.c !== undefined && !occupied.has(t.r * 15 + t.c)).slice(0, 5);
+  if (!cands.length) return;
+  cands.forEach((t, i) => {
+    const isB = i === 0;                       // top5[0] = policy argmax = 网络最想下的点
+    const x = SP + t.c * SC, y = SP + t.r * SC;
+    if (!isB) {
+      const a = Math.max(0.28, 0.80 - i * 0.13);   // 第2名0.67 第3名0.54... 渐浅
+      ctx.beginPath(); ctx.arc(x, y, SC * 0.40, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(59,130,246,${a})`; ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  });
+  const b = cands[0];
+  const x = SP + b.c * SC, y = SP + b.r * SC;
+  ctx.beginPath(); ctx.arc(x, y, SC * 0.47, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(251,191,36,.30)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(251,191,36,.95)'; ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, SC * 0.30, 0, Math.PI * 2);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(10, SC * 0.30)}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('★', x, y + 0.5);
+}
+function useGameBoard() {
+  fetch(API + '/api/state').then(r => r.json()).then(d => {
+    const st = d.state || {};
+    myStones = (st.stones || []).map((x, i) => ({r: x.r, c: x.c, v: x.v, n: i + 1}));
+    redoStack = [];   // 取新局面作废前进历史
+    const nb = myStones.filter(s => s.v === 1).length;
+    setColor(nb === myStones.length - nb ? 1 : -1);
+    drawSetupBoard();
+  });
+}
+function initWeights() {
+  fetch(API + '/api/weights').then(r => r.json()).then(d => {
+    const ws = (d.weights || []).filter(w => w.version !== 'v16');  // v16 是 9×9, 网络页(15×15)不兼容
+    window._weights = ws;
+    const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+    const vers = [...new Set(ws.map(w => w.version))].sort();
+    const verSel = document.getElementById('weightVer');
+    verSel.innerHTML = vers.map(v => `<option value="${v}">${v}</option>`).join('');
+    verSel.value = (()=>{{const _pref=[d.active||'v39','v39','v38','v37','v36','v35','v34','v33','v32','v31','v29','v28','v27','v26','v25','v24','v23','v18','v16','v14','v12','v10'];return _pref.find(v=>vers.includes(v))||vers[0];}})();
+    const fillGen = () => {
+      const v = verSel.value;
+      const list = ws.filter(w => w.version === v).sort((a, b) => itNum(b.file) - itNum(a.file));
+      const sel = document.getElementById('weightSelect');
+      sel.innerHTML = list.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('');
+    };
+    fillGen();
+    verSel.onchange = fillGen;
+    initWeightViz();   // 下拉填好后加载权重分布
+  });
+}
+
+// ── 热力图 (带坐标) ──
+function hotColor(t){
+  t = Math.max(0, Math.min(1, t));
+  const stops = [[0,8,0,0],[51,255,0,0],[102,255,85,0],[153,255,170,0],[204,255,255,128],[255,255,255,255]];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [p0,r0,g0,b0] = stops[i], [p1,r1,g1,b1] = stops[i+1];
+    if (t * 255 <= p1) {
+      const f = (t * 255 - p0) / (p1 - p0 || 1);
+      return `rgb(${Math.round(r0+(r1-r0)*f)},${Math.round(g0+(g1-g0)*f)},${Math.round(b0+(b1-b0)*f)})`;
+    }
+  }
+  return 'rgb(255,255,255)';
+}
+function fmtCoord(r, c) { return String.fromCharCode(65 + c) + (15 - r); }
+// 画热力图 + 坐标 + 棋子 (canvas 尺寸 W, pad 边距)
+function drawHeatCoord(cv, data, stones, markTop) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width;
+  const pad = 15, cell = (W - pad * 2) / 14;
+  ctx.clearRect(0, 0, W, W);
+  let mn = Infinity, mx = -Infinity;
+  data.forEach(v => { if (v > mx) mx = v; if (v < mn) mn = v; });
+  const range = mx - mn || 1;
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    ctx.fillStyle = hotColor((data[r*15+c] - mn) / range);
+    ctx.fillRect(pad + c * cell, pad + r * cell, cell, cell);
+  }
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 14; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14 * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14 * cell); ctx.stroke();
+  }
+  // 坐标 (标在格子中心, 与格子一一对应)
+  ctx.fillStyle = '#c8b090'; ctx.font = Math.max(9, Math.round(W * 0.035)) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell + cell / 2;
+    ctx.fillText(LETTERS[i], p, 6); ctx.fillText(LETTERS[i], p, W - 6);
+    ctx.fillText(15 - i, 6, p); ctx.fillText(15 - i, W - 6, p);
+  }
+  (stones || []).forEach(s => {
+    const x = pad + s.c * cell + cell/2, y = pad + s.r * cell + cell/2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.34, 0, Math.PI * 2);
+    ctx.fillStyle = s.v === 1 ? '#111' : '#f8fafc';
+    ctx.fill();
+    ctx.strokeStyle = s.v === 1 ? '#fff' : '#111'; ctx.lineWidth = 0.8;
+    ctx.stroke();
+  });
+  if (markTop) markTop.forEach(t => {
+    const x = pad + t.c * cell + cell/2, y = pad + t.r * cell + cell/2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.42, 0, Math.PI * 2);
+    ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5; ctx.stroke();
+  });
+}
+
+// ── Value 热力图: 每个空点落子后的 value (红=当前玩家优, 蓝=劣, 绿=0) ──
+function drawValueMap(cv, vmap, stones) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width;
+  const pad = 15, cell = (W - pad * 2) / 14;
+  ctx.clearRect(0, 0, W, W);
+  // 格子填色: 与 policy 同配色 (hotColor, v -1~1 → t 0~1; 高=亮热, 低=深红)
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const v = vmap[r][c];
+    if (v === null || v === undefined) continue;
+    const t = (v + 1) / 2;
+    ctx.fillStyle = hotColor(t);
+    ctx.fillRect(pad + c * cell, pad + r * cell, cell, cell);
+  }
+  // 网格 + 坐标
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 14; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14 * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14 * cell); ctx.stroke();
+  }
+  ctx.fillStyle = '#c8b090'; ctx.font = Math.max(9, Math.round(W * 0.035)) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell + cell / 2;
+    ctx.fillText(LETTERS[i], p, 6); ctx.fillText(LETTERS[i], p, W - 6);
+    ctx.fillText(15 - i, 6, p); ctx.fillText(15 - i, W - 6, p);
+  }
+  // 棋子覆盖 (2026-08-26: 去掉格子内数字, 色块更清晰; 精确值看下方'最佳'列表)
+  (stones || []).forEach(s => {
+    const x = pad + s.c * cell + cell/2, y = pad + s.r * cell + cell/2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.34, 0, Math.PI * 2);
+    ctx.fillStyle = s.v === 1 ? '#111' : '#f8fafc';
+    ctx.fill();
+    ctx.strokeStyle = s.v === 1 ? '#fff' : '#111'; ctx.lineWidth = 0.8;
+    ctx.stroke();
+  });
+}
+
+// ── 参数视图: 权重/偏置条状图 + fc 权重热力图 ──
+function paramView(id, param) {
+  if (!param) return '';
+  if (param.type === 'conv') {
+    const w = param.weight || {};
+    return `<div style="margin-top:4px;border-top:1px solid #1e293b;padding-top:3px">` +
+      `<div style="font-size:10px;color:#64748b">权重: mean=${w.mean} std=${w.std} min=${w.min} max=${w.max} · 每通道核均值</div>` +
+      `<canvas id="pw_${id}_w" width="200" height="34"></canvas>` +
+      `<div style="font-size:10px;color:#64748b">偏置(${param.bias.length}ch): <canvas id="pw_${id}_b" width="200" height="26"></canvas></div></div>`;
+  }
+  if (param.type === 'bn') {
+    return `<div style="margin-top:4px;border-top:1px solid #1e293b;padding-top:3px">` +
+      `<div style="font-size:10px;color:#64748b">BN γ(scale): <canvas id="pw_${id}_g" width="200" height="24"></canvas>` +
+      ` β(shift): <canvas id="pw_${id}_t" width="200" height="24"></canvas></div></div>`;
+  }
+  if (param.type === 'block') {
+    let h = `<div style="margin-top:4px;border-top:1px solid #1e293b;padding-top:3px">`;
+    param.parts.forEach((p, i) => {
+      h += `<div style="font-size:10px;color:#64748b">${p.name}${p.type === 'conv' ? '(conv)' : '(bn)'}: ` +
+        `<canvas id="pw_${id}_p${i}" width="200" height="22"></canvas></div>`;
+    });
+    return h + `</div>`;
+  }
+  if (param.type === 'fc') {
+    return `<div style="margin-top:4px;border-top:1px solid #1e293b;padding-top:3px">` +
+      `<div style="font-size:10px;color:#64748b">FC 权重(225→1) 按棋盘位置: <canvas id="pw_${id}_fc" width="130" height="130" style="margin-top:2px"></canvas>` +
+      ` bias=${param.bias}</div></div>`;
+  }
+  return '';
+}
+function drawBar(cv, arr, color) {
+  if (!cv || !arr || !arr.length) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  const mn = Math.min(...arr), mx = Math.max(...arr), range = mx - mn || 1;
+  const n = arr.length, bw = Math.max(1, W / n);
+  for (let i = 0; i < n; i++) {
+    const h = 4 + (H - 6) * ((arr[i] - mn) / range);
+    ctx.fillStyle = color || '#7dd3fc';
+    ctx.fillRect(i * bw, H - h, bw - 0.5, h);
+  }
+  // 0 线
+  const zeroY = H - 2 - (H - 6) * ((0 - mn) / range);
+  if (zeroY > 1 && zeroY < H - 1) {
+    ctx.strokeStyle = '#f87171'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(W, zeroY); ctx.stroke();
+  }
+}
+function drawParamViews(id, param) {
+  if (!param) return;
+  if (param.type === 'conv') {
+    drawBar(document.getElementById(`pw_${id}_w`), param.weight && param.weight.ch_mean, '#38bdf8');
+    drawBar(document.getElementById(`pw_${id}_b`), param.bias, '#fbbf24');
+  } else if (param.type === 'bn') {
+    drawBar(document.getElementById(`pw_${id}_g`), param.gamma, '#4ade80');
+    drawBar(document.getElementById(`pw_${id}_t`), param.beta, '#f472b6');
+  } else if (param.type === 'block') {
+    param.parts.forEach((p, i) => {
+      const arr = p.type === 'conv' ? (p.weight && p.weight.ch_mean) : p.gamma;
+      drawBar(document.getElementById(`pw_${id}_p${i}`), arr, p.type === 'conv' ? '#38bdf8' : '#4ade80');
+    });
+  } else if (param.type === 'fc') {
+    // v14 FC 头权重巨大不做热力图 (w15 仅 225 尺寸), 有才画
+    if (param.w15) drawHeatCoord(document.getElementById(`pw_${id}_fc`), param.w15, null, null);
+  }
+}
+
+// ── 双头传导链渲染 ──
+function headChainHTML(chain, inputLayer, isValue) {
+  let html = '';
+  if (inputLayer) {
+    html += `<div class="card chain-card">
+      <div class="nm">输入 · 主干最后特征</div>
+      <canvas id="hc_in_${isValue ? 'v' : 'p'}" width="220" height="220"></canvas>
+      <div class="st">shape ${inputLayer.shape.join('×')} · 128ch均值</div></div>`;
+  }
+  chain.forEach((ly, i) => {
+    html += '<div class="arr" style="font-size:18px;color:#64748b">→</div>';
+    if (ly.bars) {
+      // 中间层向量 (如 value_fc1 的 128 维激活) → 条形图
+      html += `<div class="card chain-card">
+        <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ly.name}${ly.final ? ' ⭐' : ''}</div>
+        <canvas id="hc_${isValue ? 'v' : 'p'}_${i}" width="220" height="120"></canvas>
+        <div class="st">shape ${ly.shape.join('×')} · ${ly.bars.length}维激活分布</div>` +
+        paramView('h' + (isValue ? 'v' : 'p') + '_' + i, ly.param) + `</div>`;
+    } else if (ly.scalar !== undefined) {
+      html += `<div class="card chain-card">
+        <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ly.name}${ly.final ? ' ⭐' : ''}</div>
+        <div class="hot-v" style="font-size:28px">${ly.scalar}</div>
+        <div class="st">shape ${ly.shape.join('×')}</div>` +
+        paramView('h' + (isValue ? 'v' : 'p') + '_' + i, ly.param) + `</div>`;
+    } else {
+      html += `<div class="card chain-card">
+        <div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ly.name}${ly.final ? ' ⭐' : ''}</div>
+        <canvas id="hc_${isValue ? 'v' : 'p'}_${i}" width="220" height="220"></canvas>
+        <div class="st">shape ${ly.shape.join('×')} · 非零率=${(ly.nz * 100).toFixed(0)}%</div>` +
+        paramView('h' + (isValue ? 'v' : 'p') + '_' + i, ly.param) + `</div>`;
+    }
+  });
+  return html;
+}
+function renderHeads(heads, layers) {
+  const resLast = [...layers].reverse().find(l => /^res/.test(l.name)) || layers[layers.length - 1];
+  document.getElementById('policyChain').innerHTML = headChainHTML(heads.policy, resLast, false);
+  document.getElementById('valueChain').innerHTML = headChainHTML(heads.value, resLast, true);
+  const draw = (id, agg, stones) => { const cv = document.getElementById(id); if (cv) drawHeatCoord(cv, agg, stones, null); };
+  heads.policy.forEach((ly, i) => { if (ly.scalar !== undefined) drawParamViews('hp_' + i, ly.param); else { draw(`hc_p_${i}`, ly.agg, ly.stones); drawParamViews('hp_' + i, ly.param); } });
+  heads.value.forEach((ly, i) => {
+    if (ly.bars) { drawBar(document.getElementById(`hc_v_${i}`), ly.bars, '#7dd3fc'); drawParamViews('hv_' + i, ly.param); }
+    else if (ly.scalar !== undefined) drawParamViews('hv_' + i, ly.param);
+    else { draw(`hc_v_${i}`, ly.agg, ly.stones); drawParamViews('hv_' + i, ly.param); }
+  });
+  if (resLast) { draw('hc_in_p', resLast.agg, null); draw('hc_in_v', resLast.agg, null); }
+}
+
+// ── 主加载 ──
+async function load() {
+  const weight = document.getElementById('weightSelect').value;
+  const r = await fetch(API + '/api/network_viz', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({stones: myStones, weight: weight})}).then(d => d.json());
+  if (!r.ok) {
+    document.getElementById('meta').textContent = '❌ ' + (r.error || '加载失败');
+    return;
+  }
+  const playerName = r.player === 1 ? '黑' : '白';
+  document.getElementById('meta').textContent =
+    `🧠 权重: ${weight} · 局面 ${r.stones.length} 子 · 轮到 ${playerName} 走 · 输入=当前玩家视角 canonical`;
+  // 棋盘 (摆谱棋盘 + 加工过程数字版棋盘)
+  drawSetupBoard();
+  drawNumBoard();
+  // canonical 数字向量
+  const p = r.player;
+  const cm = new Array(225).fill(0);
+  r.stones.forEach(s => { cm[s.r * 15 + s.c] = p * s.v; });
+  let vecHtml = '';
+  for (let row = 0; row < 15; row++) {
+    for (let col = 0; col < 15; col++) {
+      const v = cm[row * 15 + col];
+      vecHtml += (v === 0 ? '·' : (v > 0 ? '<span style="color:#fbbf24">+</span>' : '<span style="color:#38bdf8">-</span>'));
+    }
+    vecHtml += '<br>';
+  }
+  document.getElementById('vecBox').innerHTML = vecHtml;
+  // 每层热力图 (带坐标)
+  let cards = '';
+  r.layers.forEach(l => {
+    cards += `<div class="card"><div class="nm">${l.name}</div><div class="st">shape ${l.shape.join('×')} · 128ch均值</div>` +
+      `<canvas id="layer_${l.name}" width="220" height="220"></canvas>` +
+      `<div class="st">mean=${l.mean} std=${l.std} 非零率=${(l.nz*100).toFixed(0)}%</div>` +
+      paramView(l.name, l.param) + `</div>`;
+  });
+  document.getElementById('layerCards').innerHTML =
+    `<div style="font-size:12px;color:#94a3b8;margin-bottom:6px">共享主干逐层空间激活 (128通道均值, 颜色=激活强度) · 卡片下方=该层权重/偏置参数</div><div class="grid">${cards}</div>`;
+  r.layers.forEach(l => {
+    const cv = document.getElementById('layer_' + l.name);
+    drawHeatCoord(cv, l.agg, r.stones, null);
+    drawParamViews(l.name, l.param);
+  });
+  // 双头传导链
+  if (r.heads) renderHeads(r.heads, r.layers);
+  // policy
+  drawHeatCoord(document.getElementById('polCanvas'), r.policy, r.stones, r.top5);
+  document.getElementById('polTop').innerHTML =
+    'Top5: ' + r.top5.map(t => `<span class="tag">${fmtCoord(t.r, t.c)} ${t.pct}%</span>`).join(' ');
+  // 摆谱大棋盘上叠加 policy 选点标注 (top5[0]=金色★ + 排名圈深→浅)
+  drawSetupMarkers(r.top5);
+  // value
+  document.getElementById('valBox').textContent = (r.value >= 0 ? '+' : '') + r.value.toFixed(3);
+  document.getElementById('valNote').textContent = playerName + '方视角, >0=' + playerName + '优';
+  // value_map 热力图 (2026-08-26) — 对方视角 value: 最低=让对方难受(最佳), 最高=对方想要(最差)
+  if (r.value_map) {
+    drawValueMap(document.getElementById('valMapCanvas'), r.value_map, r.stones);
+    const vals = [];
+    r.value_map.forEach((row, ri) => row.forEach((v, ci) => { if (v !== null && v !== undefined) vals.push({r: ri, c: ci, v}); }));
+    vals.sort((a, b) => a.v - b.v);
+    const best = vals.slice(0, 5);
+    const worst = vals.slice(-5).reverse();
+    document.getElementById('valMapTop').innerHTML =
+      `<div>🎯 最佳(对方最低): ${best.map(t => `<span class="tag" style="background:#0f172a;border-color:#34d399">${fmtCoord(t.r, t.c)} ${t.v >= 0 ? '+' : ''}${t.v}</span>`).join(' ')}</div>` +
+      `<div style="margin-top:3px">⚠️ 最差(对方想要): ${worst.map(t => `<span class="tag" style="background:#0f172a;border-color:#f87171">${fmtCoord(t.r, t.c)} ${t.v >= 0 ? '+' : ''}${t.v}</span>`).join(' ')}</div>` +
+      (r.vm_stats ? `<div style="margin-top:3px;font-size:11px;color:#94a3b8">📊 边角: A15=${r.vm_stats.a15 !== null ? (r.vm_stats.a15 >= 0 ? '+' : '') + r.vm_stats.a15 : '有子'} · 边角均值=${r.vm_stats.corner_mean >= 0 ? '+' : ''}${r.vm_stats.corner_mean} (${r.vm_stats.corner_n}点) · 全盘std=${r.vm_stats.std} <span style="color:${Math.abs(r.vm_stats.corner_mean) > 0.4 ? '#f87171' : (r.vm_stats.std > 0.5 ? '#fbbf24' : '#34d399')}">${Math.abs(r.vm_stats.corner_mean) > 0.4 ? '⚠️边角极端→锁边角风险' : (r.vm_stats.std > 0.5 ? '分布分散' : '分布集中')}</span></div>` : '') +
+      (r.vm_stats && r.vm_stats.fit ? `<div style="margin-top:3px;font-size:11px;color:#94a3b8">🔗 policy-value贴合: 符号一致率=${Math.round(r.vm_stats.fit.sign_agree * 100)}% · MSE=${r.vm_stats.fit.mse} <span style="color:${r.vm_stats.fit.sign_agree >= 0.6 ? '#34d399' : (r.vm_stats.fit.sign_agree >= 0.45 ? '#fbbf24' : '#f87171')}">${r.vm_stats.fit.sign_agree >= 0.6 ? '贴合' : (r.vm_stats.fit.sign_agree >= 0.45 ? '一般' : '背离')}</span> (policy想下的 vs value判好的)</div>` : '')
+  }
+  // ⑥ 计算图
+  renderStructure(r.structure);
+}
+
+// ④ 权重参数分布
+let wvData = null;
+async function initWeightViz() {
+  const weight = document.getElementById('weightSelect').value;
+  const r = await fetch(API + '/api/weight_viz', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({weight: weight})}).then(d => d.json());
+  if (!r.ok) return;
+  wvData = r;
+  const sel = document.getElementById('wLayer');
+  sel.innerHTML = r.layers.map((l, i) => `<option value="${i}">${l.name} ${l.shape.join('×')}</option>`).join('');
+  drawWeightLayer();
+  drawKernel();
+}
+function drawWeightLayer() {
+  if (!wvData) return;
+  const idx = parseInt(document.getElementById('wLayer').value);
+  const l = wvData.layers[idx];
+  const cv = document.getElementById('wHist');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const W = cv.width, H = cv.height, pad = 26;
+  const hists = l.hist, mx = Math.max(...hists, 1);
+  const bw = (W - pad * 2) / hists.length;
+  hists.forEach((h, i) => {
+    const bh = (h / mx) * (H - pad - 8);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(pad + i * bw, H - pad - bh, Math.max(1, bw - 1), bh);
+  });
+  ctx.strokeStyle = '#475569'; ctx.strokeRect(pad, 4, W - pad, H - pad - 8);
+  ctx.fillStyle = '#94a3b8'; ctx.font = '10px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('min ' + l.min, pad, H - 6);
+  ctx.textAlign = 'right';
+  ctx.fillText('max ' + l.max, W - 4, H - 6);
+  ctx.textAlign = 'center';
+  ctx.fillText('0', pad, H - 6);
+  document.getElementById('wStat').textContent =
+    `mean=${l.mean} std=${l.std} | shape ${l.shape.join('×')} | ${l.hist.length} bins`;
+}
+function drawKernel() {
+  if (!wvData || !wvData.kernels) return;
+  const cv = document.getElementById('wKernel');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const ks = wvData.kernels; // 4ch × 9
+  const S = 40, ch = 4;
+  let mn = Math.min(...ks), mx = Math.max(...ks);
+  const range = mx - mn || 1;
+  for (let c = 0; c < ch; c++) {
+    for (let k = 0; k < 9; k++) {
+      const v = ks[c * 9 + k];
+      ctx.fillStyle = hotColor((v - mn) / range);
+      const x = (k % 3) * S, y = c * S + Math.floor(k / 3) * S;
+      ctx.fillRect(x, y, S, S);
+    }
+    ctx.strokeStyle = '#334155';
+    ctx.strokeRect(0, c * S, 3 * S, 3 * S);
+  }
+  ctx.fillStyle = '#94a3b8'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
+  ['ch0当前', 'ch1对手', 'ch2视角', 'ch3上步'].forEach((t, i) => {
+    ctx.fillText(t, 3 * S / 2, i * S + 3 * S + 8);
+  });
+}
+// ⑤ 网络计算图渲染 (SVG 节点 + 连线 + 形状)
+function fmtShape(s) { return '[' + s.join(',') + ']'; }
+function renderStructure(st) {
+  const box = document.getElementById('graphBox');
+  if (!st || !st.nodes || !st.nodes.length) { box.innerHTML = '<span style="color:#64748b">无结构数据</span>'; return; }
+  const nodes = st.nodes, edges = st.edges;
+  const byId = {}; nodes.forEach(n => byId[n.id] = n);
+  // 分层: 主干 / policy / value
+  const mainIds = ['input', 'conv_input', 'bn_input', 'res0', 'res1', 'res2', 'res3', 'res4', 'res5', 'res6', 'res7']
+    .filter(id => byId[id]);
+  const polIds = ['policy_conv', 'policy_bn', 'policy_out'].filter(id => byId[id]);
+  const valIds = ['value_conv', 'value_bn', 'value_fc', 'value_fc1', 'value_fc2', 'value_out']
+    .filter(id => byId[id]);
+  // 布局: 主干纵向 x=180, policy x=480, value x=780
+  const NODEW = 260, NODEH = 58, GAP = 14;
+  const pos = {};
+  let y = 20;
+  mainIds.forEach(id => { pos[id] = {x: 40, y}; y += NODEH + GAP; });
+  let py = 100;
+  polIds.forEach(id => { pos[id] = {x: 360, y: py}; py += NODEH + GAP; });
+  let vy = 100;
+  valIds.forEach(id => { pos[id] = {x: 680, y: vy}; vy += NODEH + GAP; });
+  // SVG 尺寸
+  const W = 1000, H = y + 60;
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="min-width:${W}px">`;
+  // 连线 (箭头)
+  edges.forEach(([a, b]) => {
+    if (!pos[a] || !pos[b]) return;
+    const pa = pos[a], pb = pos[b];
+    const x1 = pa.x + NODEW / 2, y1 = pa.y + NODEH;
+    const x2 = pb.x + NODEW / 2, y2 = pb.y;
+    const bend = pb.x !== pa.x ? 26 : 0;
+    svg += `<path d="M${x1},${y1} C${x1},${y1+bend} ${x2},${y2-bend} ${x2},${y2}" fill="none" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>`;
+  });
+  svg += `<defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7dd3fc"/></marker></defs>`;
+  // 节点
+  nodes.forEach(n => {
+    const p = pos[n.id];
+    if (!p) return;
+    const x = p.x, y = p.y;
+    const isPol = n.id.startsWith('policy');
+    const isVal = n.id.startsWith('value');
+    const fill = n.id === 'input' ? '#1a2b45' : (isPol ? '#3b2a10' : (isVal ? '#0d3324' : '#0f172a'));
+    const border = n.id === 'input' ? '#7dd3fc' : (isPol ? '#f59e0b' : (isVal ? '#10b981' : '#334155'));
+    svg += `<rect x="${x}" y="${y}" width="${NODEW}" height="${NODEH}" rx="8" fill="${fill}" stroke="${border}" stroke-width="1.5"/>`;
+    svg += `<text x="${x+10}" y="${y+16}" font-size="11" fill="#f1f5f9" font-weight="bold">${esc(n.name)}</text>`;
+    svg += `<text x="${x+10}" y="${y+31}" font-size="9" fill="#94a3b8">${esc(n.op)}</text>`;
+    svg += `<text x="${x+10}" y="${y+45}" font-size="9" fill="#7dd3fc">${esc(fmtShape(n.in_shape))} → ${esc(fmtShape(n.out_shape))}</text>`;
+    svg += `<text x="${x+NODEW-8}" y="${y+16}" font-size="9" fill="#64748b" text-anchor="end">${n.params.toLocaleString()}参数</text>`;
+  });
+  svg += '</svg>';
+  box.innerHTML = svg;
+}
+
+// 保存/加载局面
+// 🎯 出题: 解析推荐选点 "F8, J10" → [{r,c}...] (顺序=优先级)
+function parseAnswerList(s) {
+  const out = [];
+  const parts = (s || '').split(/[,，;；\s]+/).filter(Boolean);
+  for (const pt of parts) {
+    let m = pt.toUpperCase().match(/^([A-O])([1-9]|1[0-5])$/);
+    if (m) { out.push({r: 15 - parseInt(m[2]), c: m[1].charCodeAt(0) - 65}); continue; }
+    m = pt.match(/^([1-9]|1[0-5])[,xX-]([1-9]|1[0-5])$/);
+    if (m) out.push({r: parseInt(m[1]) - 1, c: parseInt(m[2]) - 1});
+  }
+  return out.length ? out : null;
+}
+async function savePosition() {
+  const name0 = document.getElementById('posName').value.trim();
+  if (!name0) { alert('请输入局面名称'); return; }
+  if (!myStones.length) { alert('棋盘为空'); return; }
+  const tag = '';
+  const answer = parseAnswerList(document.getElementById('ansInput').value);
+  const score = (() => { const v = parseFloat(document.getElementById('scoreInput').value); return isNaN(v) ? null : v; })();
+  // 🎯 出题: 写了推荐点 → 标题自动加"题目:"前缀
+  const name = answer ? (name0.startsWith('题目:') ? name0 : '题目:' + name0) : name0;
+  const r = await fetch(API + '/api/positions/save', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, tag, stones: myStones.map(s => ({r: s.r, c: s.c, v: s.v})), answer, score})}).then(d => d.json());
+  if (r.ok) {
+    document.getElementById('posName').value = '';
+    document.getElementById('ansInput').value = '';
+    loadPositionList();
+  }
+}
+let positionsCache = [];
+async function loadPositionList() {
+  const r = await fetch(API + '/api/positions/list').then(d => d.json());
+  positionsCache = r.positions || [];
+  const sel = document.getElementById('posSelect');
+  sel.innerHTML = positionsCache.map((p, i) =>
+    `<option value="${i}">${p.name}${p.tag ? ' [' + p.tag + ']' : ''}${p.created ? ' ·' + p.created : ''}</option>`).join('');
+  document.getElementById('posCount').textContent = positionsCache.length + ' 个';
+}
+async function loadPosition() {
+  const idx = parseInt(document.getElementById('posSelect').value);
+  const p = positionsCache[idx];
+  if (!p) return;
+    myStones = p.stones.map((s, i) => ({r: s.r, c: s.c, v: s.v, n: i + 1})); redoStack = [];
+  document.getElementById('posName').value = p.name || '';
+  // 🎯 编辑回填 (2026-08-26): 已有 answer/score → 输入框, 可补打分/选点后保存覆盖
+  document.getElementById('ansInput').value = (p.answer || []).map(a => fmtCoord(a.r, a.c)).join(', ');
+  document.getElementById('scoreInput').value = (p.score !== null && p.score !== undefined) ? p.score : '';
+  const nb = myStones.filter(s => s.v === 1).length;
+  setColor(nb === myStones.length - nb ? 1 : -1);
+  drawSetupBoard();
+  load();
+}
+async function deletePosition() {
+  const idx = parseInt(document.getElementById('posSelect').value);
+  const p = positionsCache[idx];
+  if (!p || !confirm('删除局面 ' + p.name + '?')) return;
+  const r = await fetch(API + '/api/positions/delete', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: p.name})}).then(d => d.json());
+  if (r.ok) loadPositionList();
+}
+
+// ── 📝 出题批量评估: 当前权重 × 所有带推荐选点的局面 ──
+async function runQuiz() {
+  const weight = document.getElementById('genSel').value;
+  const res = document.getElementById('quizResult');
+  if (!weight) { res.innerHTML = '<span style="color:#f87171">请先选权重</span>'; return; }
+  res.innerHTML = '<span style="color:#94a3b8">⏳ 批量评估中…</span>';
+  const r = await fetch(API + '/api/quiz/run', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({weight})}).then(d => d.json());
+  if (!r.ok) { res.innerHTML = '<span style="color:#f87171">❌ ' + (r.error || '失败') + '</span>'; return; }
+  const s = r.summary;
+  if (!s.total) { res.innerHTML = '<span style="color:#64748b">暂无出题局面 (保存时填写 🎯推荐选点 即成为题目)</span>'; return; }
+  let html = `<div style="margin:6px 0;padding:8px;background:#0f172a;border:1px solid #334155;border-radius:8px">
+    <b style="color:#fbbf24">📝 出题评估 · ${s.weight.replace('|', ' · ')}</b><br>
+    <span style="font-size:13px">共 <b>${s.total}</b> 题 · top1 命中 <b style="color:${s.top1_rate >= 50 ? '#34d399' : '#f87171'}">${s.top1_rate}%</b>
+    · top3 命中 <b style="color:${s.top3_rate >= 70 ? '#34d399' : '#fbbf24'}">${s.top3_rate}%</b>
+    · top5 命中 <b>${s.top5_rate}%</b> · 平均最佳rank <b>${s.avg_best_rank}</b></span></div>`;
+  html += r.results.map(q => {
+    const ansStr = q.answer.map(a => `${fmtCoord(a.r, a.c)}:${a.rank}(${a.pct}%)`).join(' ');
+    const t5 = q.top5.map(t => fmtCoord(t.r, t.c)).join(',');
+    return `<div style="margin:4px 0;padding:4px 6px;border-bottom:1px dashed #1e293b">
+      <b>${q.name}</b> <span style="color:#64748b">(${q.created})</span><br>
+      <span>🎯推荐: ${ansStr}</span><br>
+      <span>最佳rank=<b>${q.best_rank}</b> · top1${q.top1_hit ? '✅' : '❌'} · top3${q.top3_hit ? '✅' : '❌'} · top5${q.top5_hit ? '✅' : '❌'}</span>
+      <span style="color:#7dd3fc"> policy top5: ${t5}</span></div>`;
+  }).join('');
+  res.innerHTML = html;
+}
+
+// 初始化
+document.getElementById('setupCanvas').addEventListener('click', setupClick);
+setColor(1);
+drawSetupBoard();
+initWeights();   // 完成后自动 initWeightViz()
+loadPositionList();
+</script>
+</body>
+</html>

@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📝 出题评估</title>
+<style>
+  body { background: #0b1120; color: #e2e8f0; font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; margin: 0; }
+  nav { display: flex; gap: 8px; padding: 14px 16px 0; flex-wrap: wrap; }
+  nav a { color: #7dd3fc; text-decoration: none; font-size: 13px; padding: 6px 14px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+  nav a:hover { background: #1e293b; }
+  nav a.active { background: #1e293b; border-color: #7dd3fc; color: #e2e8f0; }
+  nav a i { margin-right: 5px; }
+  .container { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+  .card { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 14px; margin: 12px 0; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  select, input { background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+  button { background: #7c3aed; color: #fff; border: none; border-radius: 6px; padding: 7px 16px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #8b5cf6; }
+  .hit { color: #34d399; font-weight: 600; }
+  .miss { color: #f87171; font-weight: 600; }
+  .dim { color: #64748b; }
+  .quiz-item { border-bottom: 1px dashed #1e293b; padding: 8px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { padding: 5px 8px; text-align: left; border-bottom: 1px solid #1e293b; }
+  th { color: #94a3b8; }
+  .summary-num { font-size: 22px; font-weight: 700; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard"><i>📊</i> 训练监控</a>
+  <a href="/network"><i>🧠</i> 网络前向</a>
+  <a href="/mcts"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution"><i>🧬</i> 开局演化</a>
+  <a href="/replay"><i>🗂</i> 自对弈数据</a>
+  <a href="/quiz" class="active"><i>📝</i> 出题</a>
+</nav>
+<div class="container">
+  <h2 style="margin:8px 0 4px">📝 出题评估</h2>
+  <div class="dim" style="margin-bottom:8px">用户棋理标注评估集：摆谱保存时填写 🎯推荐选点 即成题目（标题自动加"题目:"前缀）· 本页批量测任意权重的 policy 准确率</div>
+
+  <div class="card">
+    <div class="row">
+      <select id="verSel"><option value="v42">v42</option><option value="v41">v41</option><option value="v40">v40</option><option value="v39">v39</option><option value="v38">v38</option><option value="v37">v37</option><option value="v36">v36</option><option value="v35">v35</option><option value="v34">v34</option><option value="v33">v33</option><option value="v32">v32</option><option value="v31">v31</option><option value="v29">v29</option><option value="v28">v28</option><option value="v27">v27</option><option value="v26">v26</option><option value="v25">v25</option><option value="v24">v24</option><option value="v23">v23</option><option value="v21b">v21b</option><option value="v21">v21</option><option value="v20b">v20b</option><option value="v19">v19</option><option value="v18">v18</option><option value="v12">v12</option><option value="v14">v14</option><option value="v10">v10</option><option value="v8">v8</option></select>
+      <select id="genSel"><option>加载中…</option></select>
+      <span style="font-size:12px;color:#94a3b8">模式:</span>
+      <label style="font-size:13px"><input type="radio" name="mode" value="policy" checked onchange="toggleMode()"> 静态 policy</label>
+      <label style="font-size:13px"><input type="radio" name="mode" value="mcts" onchange="toggleMode()"> MCTS 动态</label>
+      <span id="simChips" style="display:none;font-size:12px;color:#94a3b8">
+        档位: <label><input type="checkbox" class="simChip" value="40" checked> 40</label>
+        <label><input type="checkbox" class="simChip" value="100" checked> 100</label>
+        <label><input type="checkbox" class="simChip" value="200" checked> 200</label>
+        <label><input type="checkbox" class="simChip" value="400" checked> 400</label>
+        <label><input type="checkbox" class="simChip" value="800" checked> 800</label>
+      </span>
+      <button onclick="runQuiz()">▶ 批量评估</button>
+      <span class="dim" id="quizCount"></span>
+    </div>
+    <div class="dim" id="modeHint" style="font-size:11px;margin-top:4px">静态 = 网络前向先验 · MCTS 动态 = 带搜索的实战视角（count 分布, 一次搜到最高档, 各档位快照）</div>
+  </div>
+
+  <div id="summaryCard" class="card" style="display:none"></div>
+
+  <div id="trendPanel" class="card" style="display:none">
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:6px">📈 题目跨代趋势: <b id="trendName" style="color:#fbbf24"></b>
+      <button onclick="closeTrend()" style="background:#1e293b;color:#94a3b8;border:1px solid #475569;padding:3px 10px;font-size:11px;float:right">✕</button>
+    </div>
+    <div class="row" style="margin:6px 0">
+      <span style="font-size:12px;color:#94a3b8">对比权重:</span>
+      <span id="trendChips" style="font-size:12px"></span>
+    </div>
+    <div class="row" style="margin:6px 0">
+      <span style="font-size:12px;color:#94a3b8">模式:</span>
+      <label style="font-size:13px"><input type="radio" name="tmode" value="policy" checked> 静态 policy</label>
+      <label style="font-size:13px"><input type="radio" name="tmode" value="mcts"> MCTS 800</label>
+      <button onclick="runTrend()" style="padding:5px 14px">▶ 查看趋势</button>
+      <span class="dim" id="trendHint" style="font-size:11px">概率>=8%(绿) = 锁得住 · 3-8%(黄) = 接近 · <3%(红) = 淹没</span>
+    </div>
+    <div id="trendResult" style="font-size:12px;overflow:auto"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:6px">📋 测试记录 <span class="dim">(评估后点 💾保存测试记录 存档, 含权重/模式/全部汇总指标)</span></div>
+    <div id="quizRecords" style="font-size:12px"><div class="dim">加载中…</div></div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:13px;color:#94a3b8;margin-bottom:6px">📋 题目明细 <span class="dim">(推荐点 rank 越小越好 · best = 推荐点中最低 rank)</span></div>
+    <div id="quizResult"><div class="dim">选权重 → 批量评估</div></div>
+  </div>
+</div>
+
+<script>
+const API = '';
+function fmtCoord(r, c) { return String.fromCharCode(65 + c) + (15 - r); }
+let _weights = [];
+
+async function loadWeights() {
+  const ver = document.getElementById('verSel').value;
+  const r = await fetch(API + '/api/weights').then(d => d.json());
+  const ws = (r.weights || []).filter(w => w.version === ver && w.file !== 'weights.pt');
+  _weights = ws;
+  const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+  ws.sort((a, b) => itNum(b.file) - itNum(a.file));
+  const sel = document.getElementById('genSel');
+  sel.innerHTML = ws.length ? ws.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('')
+                            : '<option value="">无权重</option>';
+}
+document.getElementById('verSel').onchange = loadWeights;
+// ★ 默认版本跟随【活跃槽】(2026-09-27 单一真相源 active_slot.json) —— 换槽不用改本页
+fetch(API + '/api/slot').then(r=>r.json()).then(s=>{
+  const sel=document.getElementById('verSel');
+  if(s&&s.slot&&[...sel.options].some(o=>o.value===s.slot)) sel.value=s.slot;
+  loadWeights();
+}).catch(()=>loadWeights());
+
+async function loadQuizCount() {
+  const r = await fetch(API + '/api/positions/list').then(d => d.json());
+  const ps = (r.positions || []).filter(p => p.answer && p.answer.length);
+  document.getElementById('quizCount').textContent = `${ps.length} 题`;
+}
+loadQuizCount();
+loadQuizRecords();
+
+async function runQuiz() {
+  const weight = document.getElementById('genSel').value;
+  const res = document.getElementById('quizResult');
+  if (!weight) { res.innerHTML = '<span class="miss">请先选权重</span>'; return; }
+  const mode = document.querySelector('input[name=mode]:checked').value;
+  const sims = mode === 'mcts'
+    ? [...document.querySelectorAll('.simChip:checked')].map(c => parseInt(c.value))
+    : [];
+  if (mode === 'mcts' && !sims.length) { res.innerHTML = '<span class="miss">至少选一个档位</span>'; return; }
+  const t0 = Date.now();
+  res.innerHTML = `<span class="dim">⏳ ${mode === 'mcts' ? 'MCTS 批量模拟中（最多 ' + Math.max(...sims) + ' sim/题）…' : '评估中…'}</span>`;
+  const r = await fetch(API + '/api/quiz/run', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({weight, mode, sims})}).then(d => d.json());
+  const secs = ((Date.now() - t0) / 1000).toFixed(0);
+  if (!r.ok) { res.innerHTML = '<span class="miss">❌ ' + (r.error || '失败') + '</span>'; return; }
+  const s = r.summary;
+  if (!s.total) { res.innerHTML = '<span class="dim">暂无出题局面 (摆谱保存时填写 🎯推荐选点 即成为题目)</span>'; return; }
+  const color = v => v >= 50 ? '#34d399' : (v >= 30 ? '#fbbf24' : '#f87171');
+  // 记录本次评估 (保存测试记录用)
+  _lastResult = {weight, mode, sims, summary: s};
+  document.getElementById('summaryCard').style.display = '';
+  const saveBtn = `<div style="margin-top:6px"><button id="saveResultBtn" onclick="saveQuizResult()" style="background:#1e293b;color:#34d399;border:1px solid #059669;border-radius:6px;padding:4px 14px;font-size:12px;cursor:pointer">💾 保存测试记录</button></div>`;
+  if (mode === 'mcts') {
+    // ── MCTS 汇总: sim 档位表 ──
+    document.getElementById('summaryCard').innerHTML =
+      `<div style="font-size:13px;color:#94a3b8;margin-bottom:6px">📊 MCTS 动态 · ${weight.replace('|', ' · ')} · ${s.total} 题 · ${secs}s</div>
+       <table>
+         <tr><th>模拟量</th><th>TOP5 命中标准答案率</th><th>标准答案选择概率</th></tr>
+         ${(s.sims || []).map(e => `<tr>
+           <td><b>${e.sim}</b></td>
+           <td><span class="summary-num" style="color:${color(e.top5_rate)}">${e.top5_rate}%</span></td>
+           <td><span class="summary-num" style="color:#7dd3fc">${e.avg_ans_prob}%</span></td>
+         </tr>`).join('')}
+       </table>` + saveBtn;
+    res.innerHTML = r.results.map(q => {
+      return `<div class="quiz-item">
+        <div><b>${q.name}</b> <span class="dim">(${q.created})</span>
+          <button onclick="showTrend('${q.name.replace(/'/g, "\\'")}')" title="查看该题各推荐点的跨代概率变化" style="background:#1e293b;color:#7dd3fc;border:1px solid #475569;border-radius:5px;padding:2px 10px;font-size:11px;cursor:pointer;margin-left:8px">📈 趋势</button></div>
+        <div style="margin:2px 0">🎯 ${q.n_ans} 个推荐点</div>
+        ${(s.sims || []).map(e => {
+          const en = q.sims[e.sim];
+          if (!en) return '';
+          const t5 = en.top5.map(t => `${fmtCoord(t.r, t.c)}(${t.visits}次)`).join(', ');
+          return `<div style="font-size:12px">sim=${e.sim} · top5 <span class="${en.top5_hit ? 'hit' : 'miss'}">${en.top5_hit ? '✅' : '❌'}</span> · 答案概率 <b>${en.ans_prob}%</b> <span class="dim">| top5: ${t5}</span></div>`;
+        }).join('')}
+      </div>`;
+    }).join('');
+  } else {
+    // ── policy 静态汇总 ──
+    document.getElementById('summaryCard').innerHTML =
+      `<div style="font-size:13px;color:#94a3b8;margin-bottom:6px">📊 静态 policy · ${weight.replace('|', ' · ')} · 共 ${s.total} 题 · ${secs}s${s.value_n ? ` · value标注 ${s.value_n} 题` : ''}</div>
+       <table>
+         <tr><th>top1 命中</th><th>top3 命中</th><th>top5 命中</th><th>平均最佳 rank</th>${s.value_n ? '<th>value MAE</th><th>符号一致</th>' : ''}</tr>
+         <tr>
+           <td><span class="summary-num" style="color:${color(s.top1_rate)}">${s.top1_rate}%</span></td>
+           <td><span class="summary-num" style="color:${color(s.top3_rate)}">${s.top3_rate}%</span></td>
+           <td><span class="summary-num" style="color:${color(s.top5_rate)}">${s.top5_rate}%</span></td>
+           <td><span class="summary-num" style="color:#7dd3fc">${s.avg_best_rank}</span></td>
+           ${s.value_n ? `<td><span class="summary-num" style="color:${s.value_mae <= 0.3 ? '#34d399' : (s.value_mae <= 0.5 ? '#fbbf24' : '#f87171')}">${s.value_mae}</span></td>
+           <td><span class="summary-num" style="color:${s.value_sign_acc >= 70 ? '#34d399' : '#f87171'}">${s.value_sign_acc}%</span></td>` : ''}
+         </tr>
+       </table>` + saveBtn;
+    res.innerHTML = r.results.map(q => {
+      const ansStr = q.answer.map(a => `${fmtCoord(a.r, a.c)} <span class="${a.rank <= 3 ? 'hit' : (a.rank <= 5 ? '' : 'miss')}">#${a.rank}</span>(${a.pct}%)`).join('　');
+      const t5 = q.top5.map(t => fmtCoord(t.r, t.c)).join(', ');
+      const esc = q.name.replace(/'/g, "\\'");
+      const vLine = q.user_score !== null && q.user_score !== undefined
+        ? `<div>value=<b>${q.value >= 0 ? '+' : ''}${q.value}</b> vs 标注 <b>${q.user_score >= 0 ? '+' : ''}${q.user_score}</b> · 误差 <b style="color:${Math.abs(q.value - q.user_score) <= 0.3 ? '#34d399' : '#f87171'}">${Math.abs(q.value - q.user_score).toFixed(3)}</b></div>`
+        : `<div class="dim">value=${q.value >= 0 ? '+' : ''}${q.value}</div>`;
+      return `<div class="quiz-item">
+        <div><b>${q.name}</b> <span class="dim">(${q.created})</span>
+          <button onclick="showTrend('${esc}')" title="查看该题推荐点跨代概率变化" style="background:#1e293b;color:#7dd3fc;border:1px solid #475569;border-radius:5px;padding:2px 10px;font-size:11px;cursor:pointer;margin-left:8px">📈 趋势</button></div>
+        <div style="margin:2px 0">🎯 推荐: ${ansStr}</div>
+        <div>best=<b>${q.best_rank}</b> · top1 <span class="${q.top1_hit ? 'hit' : 'miss'}">${q.top1_hit ? '✅' : '❌'}</span>
+             · top3 <span class="${q.top3_hit ? 'hit' : 'miss'}">${q.top3_hit ? '✅' : '❌'}</span>
+             · top5 <span class="${q.top5_hit ? 'hit' : 'miss'}">${q.top5_hit ? '✅' : '❌'}</span>
+             <span class="dim" style="margin-left:8px">policy top5: ${t5}</span></div>
+        ${vLine}
+      </div>`;
+    }).join('');
+  }
+}
+
+function toggleMode() {
+  const m = document.querySelector('input[name=mode]:checked').value;
+  document.getElementById('simChips').style.display = m === 'mcts' ? 'inline' : 'none';
+}
+
+// ── 📈 题目跨代趋势 ──
+let _trendName = '';
+let _lastResult = null;   // 最近一次评估结果 (保存测试记录用): {weight, mode, sims, summary}
+
+// ── 💾 保存测试记录 (2026-08-27 用户): 存权重/模式/汇总指标到 quiz_results.json ──
+async function saveQuizResult() {
+  if (!_lastResult) return;
+  const btn = document.getElementById('saveResultBtn');
+  btn.disabled = true; btn.textContent = '⏳ 保存中…';
+  const r = await fetch(API + '/api/quiz/save_result', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(_lastResult)}).then(d => d.json());
+  btn.disabled = false;
+  if (r.ok) { btn.textContent = `✅ 已保存 (共 ${r.total} 条)`; loadQuizRecords(); }
+  else { btn.textContent = '❌ 保存失败'; }
+}
+async function loadQuizRecords() {
+  const box = document.getElementById('quizRecords');
+  const r = await fetch(API + '/api/quiz/results').then(d => d.json());
+  if (!r.ok) { box.innerHTML = '<div class="dim">加载失败</div>'; return; }
+  const recs = r.results || [];
+  if (!recs.length) { box.innerHTML = '<div class="dim">暂无测试记录</div>'; return; }
+  box.innerHTML = recs.map(rec => {
+    const s = rec.summary || {};
+    let line;
+    if (rec.mode === 'mcts') {
+      const sims = (s.sims || []).map(e => `s${e.sim}:${e.top5_rate}%/${e.avg_ans_prob}%`).join(' ');
+      line = `<div style="font-size:11px;color:#7dd3fc">📈 MCTS: ${sims}</div>`;
+    } else {
+      line = `<div style="font-size:11px;color:#7dd3fc">top1 ${s.top1_rate}% · top3 ${s.top3_rate}% · top5 ${s.top5_rate}% · rank ${s.avg_best_rank}${s.value_n ? ` · vMAE ${s.value_mae} · 符号 ${s.value_sign_acc}%` : ''}</div>`;
+    }
+    return `<div class="quiz-item">
+      <div><b>${rec.weight.replace('|', ' · ')}</b> <span class="dim">${rec.mode === 'mcts' ? '动态' : '静态'} · ${rec.time}</span>
+        <button onclick="delQuizRecord('${rec.time.replace(/'/g, "\\'")}')" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:5px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:6px">🗑</button></div>
+      ${line}</div>`;
+  }).join('');
+}
+async function delQuizRecord(t) {
+  if (!confirm('删除该测试记录?')) return;
+  await fetch(API + '/api/quiz/result', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({time: t})}).then(d => d.json());
+  loadQuizRecords();
+}
+function showTrend(name) {
+  _trendName = name;
+  document.getElementById('trendName').textContent = name;
+  document.getElementById('trendPanel').style.display = '';
+  // 权重 chips: 当前版本全部代, 默认选最新 + 前3个(跨代对比)
+  const ver = document.getElementById('verSel').value;
+  const ws = _weights.filter(w => w.version === ver);
+  const itNum = f => { const m = f.match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+  ws.sort((a, b) => itNum(b.file) - itNum(a.file));
+  const cur = document.getElementById('genSel').value;
+  const preselect = new Set([cur, ...ws.slice(0, 3).map(w => w.version + '|' + w.file)]);
+  document.getElementById('trendChips').innerHTML = ws.map(w => {
+    const v = w.version + '|' + w.file;
+    const checked = preselect.has(v) ? 'checked' : '';
+    return `<label style="margin:0 4px"><input type="checkbox" class="tChip" value="${v}" ${checked}> ${w.label.replace('代', 'it')}</label>`;
+  }).join('');
+  document.getElementById('trendResult').innerHTML = '';
+}
+function closeTrend() { document.getElementById('trendPanel').style.display = 'none'; }
+function pctColor(p) { return p >= 8 ? '#34d399' : (p >= 3 ? '#fbbf24' : '#f87171'); }
+async function runTrend() {
+  const weights = [...document.querySelectorAll('.tChip:checked')].map(c => c.value);
+  const res = document.getElementById('trendResult');
+  if (!weights.length) { res.innerHTML = '<span class="miss">至少选一个对比权重</span>'; return; }
+  const mode = document.querySelector('input[name=tmode]:checked').value;
+  res.innerHTML = '<span class="dim">⏳ 计算中…</span>';
+  const r = await fetch(API + '/api/quiz/trend', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: _trendName, weights, mode})}).then(d => d.json());
+  if (!r.ok) { res.innerHTML = '<span class="miss">❌ ' + (r.error || '失败') + '</span>'; return; }
+  // 解析: 每个答案点一行, 显示跨代 概率#rank
+  const rows = r.results[0].ans.map((a, ai) => {
+    const cells = r.results.map(entry => {
+      const e = entry.ans[ai];
+      const it = (entry.weight.match(/it(\d+)/) || [])[1] || entry.weight;
+      const c = pctColor(e.pct);
+      return `<span style="color:${c}">it${it}: <b>${e.pct}%</b>#${e.rank}</span>`;
+    }).join('　');
+    return `<div style="padding:5px 0;border-bottom:1px dashed #1e293b">
+      <b style="color:#fbbf24">${fmtCoord(a.r, a.c)}</b>　${cells}</div>`;
+  }).join('');
+  res.innerHTML = `<div style="margin-bottom:4px" class="dim">${r.mode === 'mcts' ? 'MCTS 800 sim' : '静态 policy'} · ${r.results.length} 个权重</div>` + rows;
+}
+</script>
+</body>
+</html>

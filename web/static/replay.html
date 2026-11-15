@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<script src="/static/chart.min.js"></script>
+<!-- 活跃槽(同步注入): 版本表默认值随槽切换, 换轮不用改本页 (2026-09-27) -->
+<script src="/api/slot.js"></script>
+<meta charset="utf-8">
+<title>🗂 自对弈数据观察</title>
+<style>
+body{background:#0b1220;color:#e2e8f0;font-family:-apple-system,'PingFang SC',sans-serif;margin:0;padding:16px}
+nav{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+nav a{color:#7dd3fc;text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid #334155;border-radius:6px;background:#0f172a}
+nav a:hover{background:#1e293b}
+nav a.active{background:#1e293b;border-color:#7dd3fc;color:#e2e8f0}
+h1{font-size:19px;margin:4px 0}
+.sec{border:1px solid #334155;border-radius:10px;padding:14px;margin:12px 0;background:#0f172a}
+.sec-title{font-weight:bold;color:#f1f5f9;margin-bottom:10px;font-size:14px}
+.card{border:1px solid #334155;border-radius:8px;padding:10px;background:#0f172a}
+.ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
+.ctrl select,.ctrl input,.ctrl button{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 10px;font-size:13px}
+.ctrl button{cursor:pointer}
+.ctrl button.primary{background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:600}
+.ctrl button:disabled{opacity:.4;cursor:not-allowed}
+input[type=range]{accent-color:#7c3aed;cursor:pointer;flex:1;min-width:150px}
+.iter-list{max-height:150px;overflow-y:auto;border:1px solid #334155;border-radius:6px;padding:6px;font-size:11px;display:flex;flex-wrap:wrap;gap:2px}
+.iter-list label{padding:1px 4px;border-radius:4px;cursor:pointer}
+.iter-list label:hover{background:#1e293b}
+.match-item{border:1px solid #334155;border-radius:6px;padding:6px 10px;margin:4px 0;font-size:12px;cursor:pointer;background:#0f172a}
+.match-item:hover{background:#1e293b;border-color:#7dd3fc}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;background:#334155;color:#e2e8f0}
+.tag.best{background:#7c3aed;color:#fff}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard"><i>📊</i> 训练监控</a>
+  <a href="/network"><i>🧠</i> 网络前向</a>
+  <a href="/mcts"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution"><i>🧬</i> 开局演化</a>
+  <a href="/replay" class="active"><i>🗂</i> 自对弈数据</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+<h1>🗂 自对弈数据观察</h1>
+<div style="color:#94a3b8;font-size:12px;margin:6px 0">
+  <b style="color:#e2e8f0">数据源</b>
+  <select id="verSel" onchange="switchVersion()" title="切换自对弈数据源版本"
+          style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:3px 8px;font-size:12px;margin:0 4px">
+  </select>
+  <span id="verInfo" style="color:#64748b"></span><br>
+  自对弈经验池 (本地 replay_pool, 每局一 pkl: 落子前局面 + MCTS分布 + 真实胜负标签)。白胜率主线跟随所选版本 + 固定对比 v24(健康基线)。
+  回放看风格 · 统计看开局中心占比 · 棋型搜索看罕见局面出现频率。
+</div>
+
+<!-- ═══ ⓪ 白胜率趋势 ═══ -->
+<div class="sec" id="wrSec" style="border-color:#0ea5e9">
+<div class="sec-title">⓪ 白胜率趋势 (自对弈各代, 黑先固定)</div>
+<div id="wrHint" style="font-size:11px;color:#64748b;margin-bottom:6px">白胜率 = 白胜局 / 总对局 · 健康基线 ~45-50% (先手优势下) · 崩盘信号: 白胜率持续 <20% + 中位手数缩短</div>
+<canvas id="whiteRateChart" height="90" style="max-width:100%"></canvas>
+<div id="wrMeta" style="font-size:11px;color:#64748b;margin-top:4px"></div>
+</div>
+
+<!-- ═══ ① 回放 ═══ -->
+<div class="sec" style="border-color:#7c3aed">
+<div class="sec-title">① 对局回放 (看 AI 下棋风格)</div>
+<div class="ctrl">
+  <label style="font-size:12px;color:#94a3b8">代 <select id="rpIter" onchange="loadGames()"></select></label>
+  <label style="font-size:12px;color:#94a3b8">局 <select id="rpGame" onchange="loadGame()" disabled></select></label>
+  <span id="rpMeta" style="font-size:12px;color:#94a3b8"></span>
+</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+  <canvas id="rpBoard" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+  <div style="flex:1;min-width:280px">
+    <div class="card">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">步数回放</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button onclick="gotoStart()" class="primary">⏮ 开局</button>
+        <button onclick="stepBy(-1)" id="rpPrev">◀ 后退</button>
+        <span id="rpStepLabel" style="font-size:13px;color:#7dd3fc;min-width:70px;text-align:center">0 / 0</span>
+        <button onclick="stepBy(1)" id="rpNext">前进 ▶</button>
+        <button onclick="gotoEnd()" class="primary">⏭ 终局</button>
+      </div>
+      <input type="range" id="rpSlider" min="0" max="1" value="0" oninput="onRPSlider()" style="margin-top:8px">
+      <div style="font-size:11px;color:#64748b;margin-top:4px" id="rpStepInfo"></div>
+      <div style="font-size:12px;color:#94a3b8;margin-top:4px" id="rpQaInfo"></div>
+      <!-- v33 过程 qa 曲线: 黑/白视角 Q 波动 (2026-09-05 用户: qa≈每步胜率感) -->
+      <div style="margin-top:8px">
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:2px">📈 过程 Q(胜率感)波动 <span style="color:#64748b">· 每步搜索 Q 软标签, 视角=当前玩家</span></div>
+        <canvas id="rpQaChart" height="110" style="max-width:100%"></canvas>
+        <div style="font-size:10px;color:#64748b;margin-top:2px">
+          <span style="color:#7dd3fc">━ 黑视角</span> = 黑步 +qa / 白步 -qa ·
+          <span style="color:#fb923c">━ 白视角</span> = 白步 +qa / 黑步 -qa
+        </div>
+      </div>
+      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed #334155">
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:4px">💾 保存当前局面 (停到某步 → 命名保存; 填🎯推荐选点/评分自动带"题目:"前缀)</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="rpPosName" placeholder="局面名称" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:4px 8px;width:100px">
+          <input id="rpAnsInput" placeholder="🎯选点 F8,J10" title="出题: 你认为该局面正确的选点(逗号分隔, 按优先级)" style="background:#1e293b;color:#fbbf24;border:1px solid #b45309;border-radius:6px;padding:4px 8px;width:120px">
+          <input id="rpScoreInput" placeholder="🎯评分" title="当前玩家视角胜率(-1~1)" style="background:#1e293b;color:#34d399;border:1px solid #059669;border-radius:6px;padding:4px 8px;width:60px" type="number" min="-1" max="1" step="0.05">
+          <button onclick="saveReplayPosition()" style="background:#1e293b;color:#34d399;border:1px solid #059669;border-radius:6px;padding:4px 12px;cursor:pointer">💾 保存</button>
+          <span id="rpSaveNote" style="font-size:10px;color:#64748b"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ ④ 本地棋谱胜率分析 (2026-09-09 用户) ═══ -->
+<div class="sec" style="border-color:#34d399">
+<div class="sec-title">④ 本地棋谱胜率分析 (保存的棋谱 → 选权重逐步 MCTS 重算 qa)</div>
+<div class="ctrl" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+  <label style="font-size:12px;color:#94a3b8">棋谱
+    <select id="anPosSel" onchange="onAnPosChange()" style="max-width:280px"></select>
+  </label>
+  <label style="font-size:12px;color:#94a3b8">权重
+    <select id="anVerSel" onchange="anLoadGens()"></select>
+    <select id="anGenSel"></select>
+  </label>
+  <label style="font-size:12px;color:#94a3b8">sim
+    <input type="number" id="anSim" value="800" min="1" max="2000" style="width:70px">
+  </label>
+  <label style="font-size:12px;color:#94a3b8">口径
+    <select id="anMode" onchange="anApplyMode()" title="best=权重最高棋力(argmax)会下那点的Q, 看局面本身胜率; 落子=棋谱实际落子点Q, 看那手好坏">
+      <option value="best">最高棋力(argmax)</option>
+      <option value="actual">棋谱落子点</option>
+    </select>
+  </label>
+  <button onclick="anStart()" id="anBtn" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer">▶ 胜率重算</button>
+  <button onclick="anCancel()" id="anCancelBtn" style="display:none;background:#dc2626;color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer">⏹ 取消</button>
+  <span id="anStatus" style="font-size:12px;color:#94a3b8"></span>
+</div>
+<div id="anProgressWrap" style="display:none;margin-bottom:6px">
+  <div style="display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;margin-bottom:2px">
+    <span id="anProgressLabel">0/0</span><span id="anPct">0%</span>
+  </div>
+  <div style="height:8px;background:#1e293b;border-radius:4px;overflow:hidden">
+    <div id="anProgressFill" style="height:100%;width:0%;background:#34d399;transition:width .5s"></div>
+  </div>
+</div>
+<div id="anHistory" style="display:none;font-size:11px;color:#64748b;margin-bottom:8px"></div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+  <canvas id="anBoard" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+  <div style="flex:1;min-width:300px">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+      <button onclick="anGoto(0)" class="primary">⏮ 开局</button>
+      <button onclick="anStep(-1)" id="anPrev">◀ 后退</button>
+      <span id="anStepLabel" style="font-size:13px;color:#7dd3fc;min-width:70px;text-align:center">0 / 0</span>
+      <button onclick="anStep(1)" id="anNext">前进 ▶</button>
+      <button onclick="anGoto(-1)" class="primary">⏭ 终局</button>
+      <button onclick="anProbe()" id="anProbeBtn" title="对当前局面(已落子到第N步)用所选权重+sim现场搜一次, 看最高棋力推荐下哪/评价多少"
+        style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer">🔍 即时重算此局面</button>
+    </div>
+    <input type="range" id="anSlider" min="0" max="1" value="0" oninput="onAnSlider()" style="width:100%">
+    <div style="font-size:11px;color:#64748b;margin-top:2px" id="anStepInfo"></div>
+    <div style="font-size:11px;color:#7dd3fc;margin-top:3px" id="anNextInfo"></div>
+    <div style="font-size:12px;color:#e2e8f0;margin-top:3px" id="anProbeResult"></div>
+    <div style="margin-top:8px">
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:2px">📈 重算 Q 曲线 (所选权重逐步 MCTS · <span style="color:#fbbf24">80% 胜率线</span>)</div>
+      <canvas id="anQaChart" height="120" style="max-width:100%"></canvas>
+      <div style="font-size:10px;color:#64748b;margin-top:2px">
+        <span style="color:#7dd3fc">━ 黑视角</span> · <span style="color:#fb923c">━ 白视角</span> · 虚线 = 各自 80% 胜率 (±0.6) · ★ 破 80% 步
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ ② 中心占比 ═══ -->
+<div class="sec" style="border-color:#0ea5e9">
+<div class="sec-title">② 开局中心占比 (第一步落点分布, 多代可合并)</div>
+<div class="ctrl">
+  <span style="font-size:12px;color:#94a3b8">选代(多选):</span>
+  <button onclick="selIters('all')" style="font-size:11px">全选</button>
+  <button onclick="selIters('none')" style="font-size:11px">清空</button>
+  <button onclick="selIters('recent')" style="font-size:11px">最近10代</button>
+</div>
+<div class="iter-list" id="ctIterList"></div>
+<div class="ctrl">
+  <button class="primary" onclick="doCenter()">📊 统计中心占比</button>
+  <span id="ctStatus" style="font-size:12px;color:#94a3b8"></span>
+</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+  <canvas id="ctBoard" width="360" height="360" style="border:1px solid #334155;border-radius:6px"></canvas>
+  <div style="flex:1;min-width:260px">
+    <div class="card" style="margin-bottom:8px">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎯 中心占比 (第一步落在中心区域)</div>
+      <div style="font-size:22px;color:#fbbf24"><span id="ctMain">—</span></div>
+      <div style="font-size:11px;color:#64748b" id="ctDetail"></div>
+    </div>
+    <div class="card">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🏆 Top 开局点</div>
+      <div id="ctTop" style="font-size:13px"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ ③ 棋型搜索 ═══ -->
+<div class="sec" style="border-color:#10b981">
+<div class="sec-title">③ 棋型搜索 (任意摆棋型, 在经验池搜出现频率)</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+  <div>
+    <canvas id="patBoard" width="300" height="300" style="border:1px solid #334155;border-radius:6px;cursor:pointer"></canvas>
+    <div style="font-size:11px;color:#64748b;margin-top:4px">
+      点击摆棋型 · <button onclick="togglePatColor()" id="patColorBtn" style="background:#111;color:#fff;border:1px solid #fbbf24;border-radius:4px;padding:2px 8px;cursor:pointer">● 黑</button>
+      <button onclick="patClear()" style="background:#1e293b;color:#f87171;border:1px solid #475569;border-radius:4px;padding:2px 8px;cursor:pointer;margin-left:4px">🗑 清空</button>
+      <label style="margin-left:8px"><input type="checkbox" id="patSym" checked> 8对称</label>
+    </div>
+  </div>
+  <div style="flex:1;min-width:300px">
+    <div class="ctrl">
+      <span style="font-size:12px;color:#94a3b8">搜索代:</span>
+      <button onclick="selPatIters('all')" style="font-size:11px">全选</button>
+      <button onclick="selPatIters('recent')" style="font-size:11px">最近10代</button>
+    </div>
+    <div class="iter-list" id="patIterList"></div>
+    <div class="ctrl">
+      <button class="primary" onclick="doSearch()">🔍 搜索棋型</button>
+      <span id="patStatus" style="font-size:12px;color:#94a3b8"></span>
+    </div>
+    <div id="patResults" style="max-height:360px;overflow-y:auto"></div>
+  </div>
+</div>
+</div>
+
+<script>
+const LETTERS = 'ABCDEFGHIJKLMNO';
+const API = '';
+// 🚨 2026-09-25 晚: 数据源版本化 —— 下拉由下方 VERS 表【自动生成】(换主线只改这两行,
+//   不用再动 HTML 的 option) + fetch 包装器统一给所有 /api/replay/* 请求带 version 参数
+//   ⚠️ v38 读法: 教练执黑(冻结 it30) vs 学生执白 → 页面上的"白胜率"就是【学生对教练的胜率】
+//      即 v38 的主指标 (目标 ≥55%), 不是普通自对弈的白胜率
+// 🚨 2026-09-26 切 v39: 第 3 列 = 该版本的"教练/学生"口径 (镜像版会翻转发色!)
+//   v39: 教练执白(冻结 v38 it57=58%巅峰) + 学生练黑 → 主指标 = 黑方(学生)胜率, 目标 80%
+//   v38: 教练执黑(冻结 it30) + 学生练白 → 主指标 = 白方(学生)胜率, 目标 55%
+//   普通自对弈线 (v36 及以前) 无教练 → 白胜率就是白胜率
+const VERS = [['v42', 'v42 (教练法+自动换边: 学生达标即换边冻结为新教练, 颜色动态; 阈值55%·连续2代)', {coach:'黑', student:'白', goal:55}],
+              ['v41', 'v41 = v40 + 梯度检查点(省显存); 单通道纯自对弈·无教练, 白胜率=指标; 30%=失衡线下限', {coach:null, student:'白', goal:30}],
+              ['v40', 'v40 (单通道版·按v1重建: 纯自对弈无教练, 白胜率=指标; 30%=失衡线下限)', {coach:null, student:'白', goal:30}],,
+              ['v39', 'v39 (R6: 教练执白 v38 it117, 学生练黑, 黑胜率=主指标, 目标80%)', {coach:'白', student:'黑', goal:80}],
+              ['v38r4', 'v38·R5 (教练=v39 it96 教白棋, 白方收官 55.0%)', {coach:'黑', student:'白', goal:55}],
+              ['v38', 'v38 (R5 槽目录: 教练执黑, 学生练白, 白胜率=主指标, 目标55%)', {coach:'黑', student:'白', goal:55}],
+              ['v38r2', 'v38·R4 (A2(黑) 教白棋, 白方 67.3%)', {coach:'黑', student:'白', goal:55}],
+              ['v38r1', 'v38·R2 (已归档: 教练=v37 it30 教白棋, 白方达标 58%)', {coach:'黑', student:'白', goal:55}],
+              ['v39r3', 'v39·R4 (已归档: 教练=v38 it77 教黑棋, 黑方达标 80.6%)', {coach:'白', student:'黑', goal:80}],
+              ['v39r1', 'v39·R1 (已归档: 教练=v38 it57 教黑棋, 黑方达标 82%)', {coach:'白', student:'黑', goal:80}],
+              ['v37', 'v37 (从零+门控 · 已终止/螺旋污染)', null],
+              ['v36', 'v36 (上一版 · 强制随机开局)', null]];
+// ★ 主线 = 当前活跃槽 (2026-09-27): 由同步脚本 /api/slot.js 提供, 换槽不用改本页
+//   以前这里把 'v38' 写成 VERS[0] 硬编码 → 换轮后回放页一直停在上一轮(看着像数据没更新) ✗
+(function applyActiveSlot() {
+  const S = window.ACTIVE_SLOT || {};
+  if (!S.slot) return;
+  const i = VERS.findIndex(x => x[0] === S.slot);
+  if (i > 0) VERS.unshift(VERS.splice(i, 1)[0]);
+  const st = S.student_name || '?', co = S.coach_name || '?';
+  const g = Math.round((S.goal || 0) * 100);
+  VERS[0][1] = `${S.slot} (主线 · 第${S.round || '?'}轮: 教练执${co} 教${st}棋, ${st}胜率=主指标, 目标${g}%)`;
+  VERS[0][2] = { coach: co, student: st, goal: g };
+})();
+const MAIN_VER = VERS[0][0];
+// 当前所选版本的口径 (= null 表示普通自对弈线)
+function verMeta() { const v = VERS.find(x => x[0] === VER); return (v && v[2]) || null; }
+let VER = MAIN_VER;
+try {
+  // 记住上次选择, 但【主线换版后自动切到新主线】(否则会一直停在旧版本 → 看着像数据没更新)
+  const _saved = localStorage.getItem('replay_ver'), _savedMain = localStorage.getItem('replay_ver_main');
+  if (_saved && _savedMain === MAIN_VER && VERS.some(v => v[0] === _saved)) VER = _saved;
+} catch (e) {}
+(function fillVerSel() {
+  const sel = document.getElementById('verSel');
+  if (sel) {
+    sel.innerHTML = VERS.map(v => `<option value="${v[0]}"${v[0] === VER ? ' selected' : ''}>${v[1]}</option>`).join('');
+  }
+})();
+const _origFetch = window.fetch.bind(window);
+window.fetch = function (u, o) {
+  try {
+    if (typeof u === 'string' && u.indexOf('/api/replay/') >= 0 && u.indexOf('version=') < 0) {
+      u = u + (u.indexOf('?') >= 0 ? '&' : '?') + 'version=' + VER;
+    }
+  } catch (e) {}
+  return _origFetch(u, o);
+};
+
+function switchVersion() {
+  const sel = document.getElementById('verSel');
+  VER = sel ? sel.value : MAIN_VER;
+  try { localStorage.setItem('replay_ver', VER); localStorage.setItem('replay_ver_main', MAIN_VER); } catch (e) {}
+  ITERS = [];                     // 清掉旧版本索引缓存
+  selIters('');                   // 清掉勾选
+  initIndex();
+}
+let ITERS = [];          // [{iter, games}]
+let rpStones = [];       // 当前回放局 stones
+let rpIdx = 0;
+let patStones = [];      // 摆棋型 {r,c,v}
+let patColor = 1;
+
+// ── 棋盘绘制 (格点风格: 棋子落交叉点) ──
+function drawBoard(cv, stones, highlight) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width, pad = 26, cell = (W - pad * 2) / 14;
+  ctx.clearRect(0, 0, W, W);
+  ctx.fillStyle = '#dcb35c'; ctx.fillRect(0, 0, W, W);
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = 1;
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14 * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14 * cell); ctx.stroke();
+  }
+  ctx.strokeStyle = '#5a3820'; ctx.lineWidth = 2;
+  ctx.strokeRect(pad, pad, 14 * cell, 14 * cell);
+  ctx.fillStyle = '#5a3820';
+  [[3,3],[3,7],[3,11],[7,3],[7,7],[7,11],[11,3],[11,7],[11,11]].forEach(([r,c]) => {
+    ctx.beginPath(); ctx.arc(pad + c*cell, pad + r*cell, cell*0.14, 0, Math.PI*2); ctx.fill();
+  });
+  ctx.fillStyle = '#5a3820'; ctx.font = Math.max(9, Math.round(W * 0.03)) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell;
+    ctx.fillText(LETTERS[i], p, pad - 12); ctx.fillText(LETTERS[i], p, W - pad + 12);
+    ctx.fillText(15 - i, pad - 12, p); ctx.fillText(15 - i, W - pad + 12, p);
+  }
+  (stones || []).forEach(s => {
+    const x = pad + s.c * cell, y = pad + s.r * cell;
+    const rad = cell * 0.42;
+    ctx.beginPath(); ctx.arc(x + 2, y + 2, rad, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fill();
+    const g = ctx.createRadialGradient(x - rad*.3, y - rad*.3, rad*.1, x, y, rad);
+    if (s.v === 1) { g.addColorStop(0,'#666'); g.addColorStop(.6,'#222'); g.addColorStop(1,'#000'); }
+    else { g.addColorStop(0,'#fff'); g.addColorStop(.6,'#eee'); g.addColorStop(1,'#bbb'); }
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
+    ctx.fillStyle = s.v === 1 ? '#ccc' : '#333';
+    ctx.font = `bold ${cell * 0.3}px sans-serif`;
+    ctx.fillText(s.n || '', x, y + 0.5);
+  });
+  if (highlight) {
+    const x = pad + highlight.c * cell, y = pad + highlight.r * cell;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.46, 0, Math.PI * 2);
+    ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+}
+
+// ── ① 回放 ──
+async function initIndex() {
+  const r = await fetch(API + '/api/replay/index').then(d => d.json());
+  const vs = document.getElementById('verSel');
+  if (vs) vs.value = VER;
+  if (!r.ok) {
+    const vi = document.getElementById('verInfo');
+    if (vi) vi.innerHTML = ` <span style="color:#f87171">${VER} 无本地数据 — ${r.error || '索引未构建'}</span>`;
+    alert(r.error || '索引未构建'); return;
+  }
+  const vi = document.getElementById('verInfo');
+  if (vi) vi.innerHTML = ` <span style="color:#64748b">${VER}: ${r.total_games} 局 / ${r.iters.length} 代 (it${r.iter_range[0]}~it${r.iter_range[1]})</span>`;
+  ITERS = r.iters;
+  const sel = document.getElementById('rpIter');
+  sel.innerHTML = ITERS.map(x => `<option value="${x.iter}">代 ${x.iter} (${x.games}局)</option>`).join('');
+  // 2026-09-13: 默认选中最新代 —— 同步数据后打开就能看最近的(下拉有 160+ 项, 每次手动滚到底很烦)
+  if (ITERS.length) sel.value = ITERS[ITERS.length - 1].iter;
+  fillIterList('ctIterList', 'ctSel');
+  fillIterList('patIterList', 'patSel');
+  loadGames();
+}
+function fillIterList(id, cls) {
+  document.getElementById(id).innerHTML = ITERS.map(x =>
+    `<label><input type="checkbox" class="${cls}" value="${x.iter}">${x.iter}</label>`).join('');
+}
+function selIters(mode) {
+  const cbs = document.querySelectorAll('#ctIterList input');
+  const vals = ITERS.map(x => x.iter);
+  const recent = vals.slice(-10);
+  cbs.forEach(cb => cb.checked = mode === 'all' || (mode === 'recent' && recent.includes(parseInt(cb.value))));
+}
+function selPatIters(mode) {
+  const cbs = document.querySelectorAll('#patIterList input');
+  const vals = ITERS.map(x => x.iter);
+  const recent = vals.slice(-10);
+  cbs.forEach(cb => cb.checked = mode === 'all' || (mode === 'recent' && recent.includes(parseInt(cb.value))));
+}
+async function loadGames() {
+  const it = document.getElementById('rpIter').value;
+  const r = await fetch(API + '/api/replay/games', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({iter: it})}).then(d => d.json());
+  if (!r.ok) return;
+  const sel = document.getElementById('rpGame');
+  sel.disabled = false;
+  sel.innerHTML = r.games.map((g, i) =>
+    `<option value="${i}">局${i} (${g.steps}步, ${g.winner === 1 ? '黑胜' : g.winner === -1 ? '白胜' : '平'})</option>`).join('');
+  loadGame();
+}
+async function loadGame() {
+  const it = document.getElementById('rpIter').value;
+  const games = await fetch(API + '/api/replay/games', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({iter: it})}).then(d => d.json());
+  const g = games.games[parseInt(document.getElementById('rpGame').value)];
+  if (!g) return;
+  const r = await fetch(API + '/api/replay/game', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({file: g.file})}).then(d => d.json());
+  if (!r.ok) return;
+  rpStones = r.stones.map((s, i) => ({r: s.r, c: s.c, v: s.v, n: i + 1, qa: s.qa}));
+  document.getElementById('rpMeta').textContent =
+    `胜者: ${r.winner === 1 ? '黑⚫' : '白⚪'} · 共 ${r.steps} 步 · ${g.file}`;
+  drawRpQaChart(rpStones);
+  rpIdx = rpStones.length;  // 默认终局
+  const slider = document.getElementById('rpSlider');
+  slider.min = 0; slider.max = rpStones.length; slider.value = rpStones.length;
+  renderRP();
+}
+function renderRP() {
+  document.getElementById('rpStepLabel').textContent = `${rpIdx} / ${rpStones.length}`;
+  document.getElementById('rpSlider').value = rpIdx;
+  const stones = rpStones.slice(0, rpIdx);
+  const hl = rpIdx > 0 ? rpStones[rpIdx - 1] : null;
+  drawBoard(document.getElementById('rpBoard'), stones.map((s, i) => ({...s, n: i + 1})), hl);
+  document.getElementById('rpStepInfo').textContent =
+    rpIdx === 0 ? '开局' :
+    (rpIdx === rpStones.length && rpStones[rpIdx-1].win
+      ? `🏁 第 ${rpIdx} 步: ${LETTERS[hl.c]}${15 - hl.r} (${hl.v === 1 ? '黑' : '白'}) — 致胜手, 五连!`
+      : `第 ${rpIdx} 步: ${LETTERS[hl.c]}${15 - hl.r} (${hl.v === 1 ? '黑' : '白'})`);
+  // v33 qa 展示: 该步的 MCTS Q 软标签 (当前玩家视角, 落子前局面)
+  const qaInfo = document.getElementById('rpQaInfo');
+  if (qaInfo) {
+    const st = rpIdx > 0 ? rpStones[rpIdx - 1] : null;
+    if (st && st.qa !== undefined && st.qa !== null) {
+      qaInfo.innerHTML = `🎯 Q<sub>a</sub> = <b style="color:${st.qa >= 0 ? '#34d399' : '#f87171'}">${st.qa >= 0 ? '+' : ''}${st.qa}</b>` +
+        `<span style="color:#64748b;font-size:10px"> (该步 MCTS 搜索 Q 软标签·训练 value 目标)</span>`;
+    } else if (st && st.win) {
+      qaInfo.textContent = '🎯 致胜手(补): 无 qa(轨迹不含成五局面)';
+    } else {
+      qaInfo.textContent = '';
+    }
+  }
+  document.getElementById('rpPrev').disabled = rpIdx <= 0;
+  document.getElementById('rpNext').disabled = rpIdx >= rpStones.length;
+}
+function stepBy(d) {
+  rpIdx = Math.max(0, Math.min(rpStones.length, rpIdx + d));
+  renderRP();
+}
+
+// 📈 过程 Q(胜率感)波动: 黑视角 vs 白视角 (v33 qa 软标签, 2026-09-05)
+let rpQaChart = null;
+function drawRpQaChart(stones) {
+  const cv = document.getElementById('rpQaChart');
+  if (!cv) return;
+  // stones[k] 的 qa 是"该步落子者视角"(v 存了颜色); 落子后轮到对手 → 视角换算
+  // 黑视角序列: 第 k 步后 = (v[k]===1 ? qa[k] : -qa[k])  白视角 = -黑视角
+  const xs = [], black = [], white = [];
+  for (let k = 0; k < stones.length; k++) {
+    const s = stones[k];
+    if (s.qa === undefined || s.qa === null) continue;
+    const bq = s.v === 1 ? s.qa : -s.qa;   // 黑视角
+    xs.push(k + 1);
+    black.push(parseFloat(bq.toFixed(4)));
+    white.push(parseFloat((-bq).toFixed(4)));
+  }
+  if (rpQaChart) { rpQaChart.destroy(); rpQaChart = null; }
+  if (!xs.length) return;
+  rpQaChart = new Chart(cv.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: xs.map(i => i + ''),
+      datasets: [
+        {label: '黑视角', data: black, borderColor: '#7dd3fc', backgroundColor: 'rgba(125,211,252,0.08)',
+         fill: false, tension: .3, pointRadius: 1.5, borderWidth: 1.5},
+        {label: '白视角', data: white, borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.08)',
+         fill: false, tension: .3, pointRadius: 1.5, borderWidth: 1.5}
+      ]
+    },
+    options: {
+      responsive: true, animation: false,
+      plugins: {legend: {display: true, labels: {color: '#94a3b8', boxWidth: 10, font: {size: 10}}}},
+      scales: {
+        x: {ticks: {color: '#64748b', font: {size: 8}, maxTicksLimit: 15}, grid: {color: '#1e293b'}},
+        y: {min: -1, max: 1, title: {display: true, text: '±Q (各自占优向上)', color: '#64748b', font: {size: 9}},
+            ticks: {color: '#64748b', font: {size: 9}, stepSize: 0.5}, grid: {color: '#1e293b'}}
+      }
+    }
+  });
+}
+function gotoEnd() { rpIdx = rpStones.length; renderRP(); }
+function gotoStart() { rpIdx = 0; renderRP(); }
+function onRPSlider() {
+  rpIdx = parseInt(document.getElementById('rpSlider').value);
+  renderRP();
+}
+
+// ── ④ 本地棋谱胜率分析 (2026-09-09 用户: 保存棋谱 → 选权重逐步 MCTS 重算 qa, 看预知能力) ──
+let anStones = [];      // 当前展示的分析棋谱 [{r,c,v,qa,cold}]
+let anIdx = 0;
+let anQaChart = null;
+let anTimer = null;
+
+// fmtCoord 已在 replay.html 顶部? 无 → 本地定义
+if (typeof fmtCoord === 'undefined') {
+  function fmtCoord(r, c) { return LETTERS[c] + (15 - r); }
+}
+
+async function anLoadPositions() {
+  const r = await fetch(API + '/api/positions/list').then(d => d.json());
+  const poss = (r.positions || []).filter(p =>
+    p.stones && p.stones.length && p.stones[0].v === 1);   // 只列完整对局(黑1起)
+  const sel = document.getElementById('anPosSel');
+  sel.innerHTML = poss.map(p => {
+    const n = p.stones.length;
+    const tag = p.tag ? `[${p.tag}]` : '';
+    return `<option value="${p.name.replace(/"/g, '&quot;')}">${tag} ${p.name.slice(0, 44)} (${n}手)</option>`;
+  }).join('');
+  if (poss.length) onAnPosChange();
+}
+async function anLoadWeights() {
+  const r = await fetch(API + '/api/weights').then(d => d.json());
+  const ws = (r.weights || []).filter(w => w.file !== 'weights.pt');
+  window._anWeights = ws;
+  const vers = [...new Set(ws.map(w => w.version))].sort();
+  const vs = document.getElementById('anVerSel');
+  vs.innerHTML = vers.map(v => `<option value="${v}">${v}</option>`).join('');
+  const def = vers.includes('v36') ? 'v36' : vers[vers.length - 1];
+  vs.value = def;
+  anLoadGens();
+}
+function anLoadGens() {
+  const v = document.getElementById('anVerSel').value;
+  const ws = (window._anWeights || []).filter(w => w.version === v);
+  const itNum = f => { const m = (f || '').match(/weights_it(\d+)/); return m ? parseInt(m[1]) : -1; };
+  ws.sort((a, b) => itNum(b.file) - itNum(a.file));
+  const gs = document.getElementById('anGenSel');
+  gs.innerHTML = ws.map(w => `<option value="${w.version}|${w.file}">${w.label}</option>`).join('');
+}
+async function onAnPosChange() {
+  const name = document.getElementById('anPosSel').value;
+  const status = document.getElementById('anStatus');
+  if (!name) { status.textContent = ''; return; }
+  status.textContent = '⏳ 加载该棋谱已有分析…';
+  try {
+    const r = await fetch(API + '/api/analysis/list?pos_name=' + encodeURIComponent(name)).then(d => d.json());
+    const hist = document.getElementById('anHistory');
+    if (r.records && r.records.length) {
+      hist.style.display = '';
+      hist.innerHTML = `<b style="color:#94a3b8">已有分析</b> ` + r.records.map((rc, i) => {
+        const wS = (rc.weight || '').replace('weights_it', 'it').replace('.pt', '');
+        const win = rc.winner === 1 ? '黑胜' : rc.winner === -1 ? '白胜' : rc.winner === 0 ? '平' : '未终局';
+        return `<a href="javascript:void 0" onclick="anLoadRecord(${i})" style="color:#7dd3fc;margin-right:10px;text-decoration:underline">` +
+          `${wS} · sim${rc.sim} · ${rc.n}手 · ${win} · ${rc.created}</a>`;
+      }).join('');
+      window._anRecs = r.records;
+    } else {
+      hist.style.display = 'none';
+      hist.innerHTML = '';
+      window._anRecs = [];
+    }
+    status.textContent = r.records && r.records.length ? `${r.records.length} 条历史分析, 可点上方载入` : '该棋谱尚未分析';
+  } catch (e) {
+    status.textContent = '❌ 加载历史失败';
+  }
+}
+async function anLoadRecord(i) {
+  const rc = (window._anRecs || [])[i];
+  if (!rc) return;
+  anStones = rc.qas.map((q, k) => ({
+    r: q.r, c: q.c, v: q.v,
+    actual_qa: q.actual_qa !== undefined ? q.actual_qa : q.qa,   // 兼容旧记录(只有 qa)
+    best_qa: q.best_qa,
+    best_r: q.best_r, best_c: q.best_c,
+    cold: q.cold, n: k + 1
+  }));
+  anIdx = anStones.length;
+  document.getElementById('anSlider').min = 0;
+  document.getElementById('anSlider').max = anStones.length;
+  document.getElementById('anSlider').value = anStones.length;
+  const win = rc.winner === 1 ? '黑胜' : rc.winner === -1 ? '白胜' : rc.winner === 0 ? '平' : '未终局';
+  document.getElementById('anStatus').textContent =
+    `📂 ${(rc.weight || '').replace('weights_it', 'it').replace('.pt', '')} sim${rc.sim} · ${rc.n}手 · ${win} · ${rc.created}`;
+  anRender();
+  anDrawQa();
+}
+// 当前口径下某步的 qa 值
+function anQaOf(s) {
+  const mode = document.getElementById('anMode').value;
+  return mode === 'best' ? s.best_qa : s.actual_qa;
+}
+function anApplyMode() { anRender(); anDrawQa(); }
+function anRender() {
+  const stones = anStones.slice(0, anIdx);
+  const mode = document.getElementById('anMode').value;
+  document.getElementById('anStepLabel').textContent = `${anIdx} / ${anStones.length}`;
+  document.getElementById('anSlider').value = anIdx;
+  const hl = anIdx > 0 ? anStones[anIdx - 1] : null;
+  drawBoard(document.getElementById('anBoard'), stones.map((s, i) => ({...s, n: i + 1})), hl);
+  document.getElementById('anStepInfo').textContent = anIdx === 0 ? '开局' :
+    `第 ${anIdx} 步: ${fmtCoord(hl.r, hl.c)} (${hl.v === 1 ? '黑' : '白'})` +
+    (mode === 'best'
+      ? (hl.best_qa !== undefined && hl.best_qa !== null
+          ? ` · 最强应对 <b style="color:#7dd3fc">${fmtCoord(hl.best_r, hl.best_c)}</b> Q = <b style="color:${hl.best_qa >= 0 ? '#34d399' : '#f87171'}">${hl.best_qa >= 0 ? '+' : ''}${hl.best_qa}</b> (80%=0.6)`
+          : '')
+      : (hl.actual_qa !== undefined && hl.actual_qa !== null
+          ? ` · 该手 Q = <b style="color:${hl.actual_qa >= 0 ? '#34d399' : '#f87171'}">${hl.actual_qa >= 0 ? '+' : ''}${hl.actual_qa}</b> ${hl.cold ? '<span style="color:#fbbf24">(冷点:权重搜索未考虑此手,网络直评)</span>' : ''}`
+          : ''));
+  // 📌 下一步提示: 停在 N 步 → 显示第 N+1 手 权重推荐(来自整局分析) vs 棋谱实际
+  const nextInfo = document.getElementById('anNextInfo');
+  const nx = anStones[anIdx];
+  if (nextInfo && anIdx < anStones.length && nx) {
+    const nb = anStones.slice(0, anIdx).filter(s => s.v === 1).length;
+    const nw = anStones.slice(0, anIdx).filter(s => s.v === -1).length;
+    const toMove = nb === nw ? '黑' : '白';
+    if (nx.best_qa !== undefined && nx.best_qa !== null) {
+      const diff = nx.actual_qa !== null && nx.actual_qa !== undefined
+        ? nx.best_qa - nx.actual_qa : null;
+      nextInfo.innerHTML =
+        `📌 第${anIdx + 1}手(轮到<b>${toMove}</b>): 权重推荐 <b style="color:#7dd3fc">${fmtCoord(nx.best_r, nx.best_c)}</b> Q=<b>${nx.best_qa >= 0 ? '+' : ''}${nx.best_qa}</b>` +
+        (nx.actual_qa !== null && nx.actual_qa !== undefined
+          ? ` · 棋谱实际下 <b>${fmtCoord(nx.r, nx.c)}</b> Q=${nx.actual_qa >= 0 ? '+' : ''}${nx.actual_qa}` +
+            (diff !== null ? ` <span style="color:${diff > 0.3 ? '#f87171' : diff < -0.3 ? '#34d399' : '#94a3b8'}">(差 ${diff >= 0 ? '+' : ''}${diff.toFixed(2)}${diff > 0.3 ? ' = 这手是失误?' : ''})</span>` : '')
+          : '') +
+        ` · 点击 <b style="color:#a78bfa">🔍 即时重算</b> 用当前权重/sim 现场验证`;
+    } else {
+      nextInfo.innerHTML = `📌 第${anIdx + 1}手(轮到${toMove})待分析 — 点 <b style="color:#a78bfa">🔍 即时重算</b> 现场搜`;
+    }
+  } else if (nextInfo) {
+    nextInfo.innerHTML = '';
+  }
+}
+function anStep(d) { anIdx = Math.max(0, Math.min(anStones.length, anIdx + d)); anRender(); }
+function anGoto(x) { anIdx = x < 0 ? anStones.length : x; anRender(); }
+function onAnSlider() { anIdx = parseInt(document.getElementById('anSlider').value); anRender(); }
+
+// 🔍 即时重算当前局面: 已落子到 anIdx, 用当前权重+sim 现场搜一次看最高棋力推荐
+async function anProbe() {
+  const weight = document.getElementById('anGenSel').value;
+  const sim = parseInt(document.getElementById('anSim').value) || 800;
+  const cur = anStones.slice(0, anIdx);
+  const res = document.getElementById('anProbeResult');
+  const btn = document.getElementById('anProbeBtn');
+  if (!weight) { alert('请选择权重'); return; }
+  if (anIdx === 0) { res.innerHTML = '<span style="color:#fbbf24">开局空盘可直接看权重首选, 也可前进几步再算</span>'; return; }
+  if (anIdx >= anStones.length) { res.innerHTML = '<span style="color:#fbbf24">已在终局 — 请后退几步到想验证的局面</span>'; return; }
+  btn.disabled = true;
+  btn.textContent = '🔍 搜索中…';
+  res.innerHTML = `<span style="color:#64748b">⏳ 正在用 ${weight.replace('weights_it', 'it').replace('.pt', '')} · sim${sim} 搜索该局面… (~${Math.round(sim / 800 * 15)}s)</span>`;
+  try {
+    const r = await fetch(API + '/api/analysis/probe', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({stones: cur.map(s => ({r: s.r, c: s.c, v: s.v})), weight, sim})}).then(d => d.json());
+    if (!r.ok) { res.innerHTML = '❌ ' + (r.error || '失败'); return; }
+    const b = r.best;
+    const toMove = r.player === 1 ? '黑' : '白';
+    const qaColor = c => c >= 0 ? '#34d399' : '#f87171';
+    const qaStr = q => `${q >= 0 ? '+' : ''}${q.toFixed(3)}`;
+    let html = `✅ 第${anIdx + 1}手(轮到<b>${toMove}</b>) 最高棋力推荐: <b style="color:#7dd3fc">${fmtCoord(b.r, b.c)}</b> · Q = <b style="color:${qaColor(b.q)}">${qaStr(b.q)}</b> · ${b.visits}访问`;
+    // 对比棋谱实际那手
+    const nx = anStones[anIdx];
+    if (nx) {
+      const same = nx.r === b.r && nx.c === b.c;
+      html += same ? ' <span style="color:#34d399">← 与棋谱一致 ✓</span>' : ` <span style="color:#94a3b8">· 棋谱实际下 ${fmtCoord(nx.r, nx.c)}</span>`;
+      if (nx.actual_qa !== undefined && nx.actual_qa !== null) {
+        html += ` <span style="color:#94a3b8">(该手历史Q ${qaStr(nx.actual_qa)})</span>`;
+      }
+    }
+    html += `<div style="font-size:10px;color:#64748b;margin-top:2px">候选: ${(r.top || []).slice(0, 3).map(t => `${fmtCoord(t.r, t.c)} Q${qaStr(t.q)}`).join(' · ')}</div>`;
+    res.innerHTML = html;
+    // 在棋盘上标出推荐点 (画在已落子之上: 紫色圈)
+    const cv = document.getElementById('anBoard');
+    const ctx = cv.getContext('2d');
+    const pad = 26, cell = (cv.width - pad * 2) / 14;
+    const x = pad + b.c * cell, y = pad + b.r * cell;
+    ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#a78bfa'; ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('★', x, y);
+  } catch (e) {
+    res.innerHTML = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 即时重算此局面';
+  }
+}
+
+function anDrawQa() {
+  const cv = document.getElementById('anQaChart');
+  if (!cv) return;
+  if (anQaChart) { anQaChart.destroy(); anQaChart = null; }
+  const mode = document.getElementById('anMode').value;
+  const stones = anStones;
+  // 黑视角序列: v=黑步 +q, 白步 -q
+  const xs = [], black = [], white = [];
+  for (let k = 0; k < stones.length; k++) {
+    const q = anQaOf(stones[k]);
+    if (q === undefined || q === null) continue;
+    const bq = stones[k].v === 1 ? q : -q;
+    xs.push(k + 1); black.push(+bq.toFixed(4)); white.push(+(-bq).toFixed(4));
+  }
+  if (!xs.length) return;
+  // 破 80% 首点 (各自视角首次 ≥0.6)
+  const br = black.findIndex(v => v >= 0.6);
+  const wr = white.findIndex(v => v >= 0.6);
+  const ds = [
+    {label: '黑视角', data: black, borderColor: '#7dd3fc', backgroundColor: 'rgba(125,211,252,0.06)', fill: false, tension: .3, pointRadius: 1.5, borderWidth: 1.5},
+    {label: '白视角', data: white, borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,0.06)', fill: false, tension: .3, pointRadius: 1.5, borderWidth: 1.5}
+  ];
+  // 破80%标注 (独立数据集画单点)
+  if (br >= 0) {
+    const arr = new Array(xs.length).fill(null); arr[br] = black[br];
+    ds.push({label: `★黑破80%(${xs[br]}步)`, data: arr, borderColor: '#34d399',
+             backgroundColor: 'rgba(52,211,153,.9)', pointStyle: 'rectRot', pointRadius: 7, pointHoverRadius: 7, showLine: false});
+  }
+  if (wr >= 0) {
+    const arr = new Array(xs.length).fill(null); arr[wr] = white[wr];
+    ds.push({label: `★白破80%(${xs[wr]}步)`, data: arr, borderColor: '#fbbf24',
+             backgroundColor: 'rgba(251,191,36,.9)', pointStyle: 'rectRot', pointRadius: 7, pointHoverRadius: 7, showLine: false});
+  }
+  anQaChart = new Chart(cv.getContext('2d'), {
+    type: 'line',
+    data: { labels: xs.map(String), datasets: ds },
+    plugins: [anLinePlugin],
+    options: {
+      responsive: true, animation: false,
+      plugins: {
+        legend: {labels: {color: '#94a3b8', boxWidth: 10, font: {size: 10}}}
+      },
+      scales: {
+        x: {ticks: {color: '#64748b', font: {size: 8}, maxTicksLimit: 20}, grid: {color: '#1e293b'}},
+        y: {min: -1, max: 1, title: {display: true, text: `Q (${mode === 'best' ? '最高棋力应对' : '棋谱落子'}, ±0.6=80%)`, color: '#64748b', font: {size: 9}},
+            ticks: {color: '#64748b', font: {size: 9}, stepSize: 0.5}, grid: {color: '#1e293b'}}
+      }
+    }
+  });
+}
+
+// 80% 线: 通过 Chart.js 自定义 plugin 画水平虚线 (纯色, 不依赖 annotation 插件)
+const anLinePlugin = {
+  id: 'an80line',
+  afterDraw(chart) {
+    const yA = chart.scales.y, xA = chart.scales.x;
+    const ctx = chart.ctx;
+    if (!yA || !xA) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(52,211,153,.5)'; ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1;
+    const yB = yA.getPixelForValue(0.6);
+    ctx.beginPath(); ctx.moveTo(xA.left, yB); ctx.lineTo(xA.right, yB); ctx.stroke();
+    ctx.fillStyle = '#34d399'; ctx.font = '8px sans-serif';
+    ctx.fillText('黑80%', xA.left + 2, yB - 2);
+    ctx.strokeStyle = 'rgba(251,146,60,.5)';
+    const yW = yA.getPixelForValue(-0.6);
+    ctx.beginPath(); ctx.moveTo(xA.left, yW); ctx.lineTo(xA.right, yW); ctx.stroke();
+    ctx.fillStyle = '#fb923c';
+    ctx.fillText('白80%', xA.left + 2, yW + 9);
+    ctx.restore();
+  }
+};
+
+async function anStart() {
+  const posName = document.getElementById('anPosSel').value;
+  const weight = document.getElementById('anGenSel').value;
+  const sim = parseInt(document.getElementById('anSim').value) || 800;
+  if (!posName || !weight) { alert('请选择棋谱和权重'); return; }
+  const btn = document.getElementById('anBtn');
+  btn.disabled = true;
+  document.getElementById('anCancelBtn').style.display = '';
+  document.getElementById('anProgressWrap').style.display = '';
+  document.getElementById('anStatus').textContent = `🚀 重算中: ${posName.slice(0, 30)} · ${weight.replace('weights_it', 'it').replace('.pt', '')} · sim${sim} — 本地 CPU 每步约几十秒, 耐心等待`;
+  const r = await fetch(API + '/api/analysis/start', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pos_name: posName, weight, sim})}).then(d => d.json());
+  if (!r.ok) { alert('启动失败: ' + (r.error || '')); btn.disabled = false; return; }
+  // 轮询进度
+  if (anTimer) clearInterval(anTimer);
+  anTimer = setInterval(async () => {
+    const st = await fetch(API + '/api/analysis/status').then(d => d.json());
+    const fill = document.getElementById('anProgressFill');
+    fill.style.width = st.pct + '%';
+    document.getElementById('anProgressLabel').textContent = `${st.done}/${st.total} 步`;
+    document.getElementById('anPct').textContent = st.pct + '%';
+    if (!st.running) {
+      clearInterval(anTimer); anTimer = null;
+      btn.disabled = false;
+      document.getElementById('anCancelBtn').style.display = 'none';
+      if (st.error) {
+        document.getElementById('anStatus').textContent = '❌ ' + st.error;
+      } else {
+        document.getElementById('anStatus').textContent = '✅ 完成! ' + posName.slice(0, 30);
+        onAnPosChange();   // 刷新历史 → 自动显示最新
+        // 自动载入最新记录
+        const recs = window._anRecs || [];
+        if (recs.length) anLoadRecord(recs.length - 1);
+      }
+    }
+  }, 3000);
+}
+async function anCancel() {
+  await fetch(API + '/api/analysis/cancel', {method: 'POST'}).catch(() => {});
+  document.getElementById('anStatus').textContent = '⏹ 取消请求已发, 等当前步算完停止';
+}
+
+// ④ 启动时初始化
+anLoadPositions();
+anLoadWeights();
+function parseAnswerList(s) {
+  const out = [];
+  const parts = (s || '').split(/[,，;；\s]+/).filter(Boolean);
+  for (const pt of parts) {
+    let m = pt.toUpperCase().match(/^([A-O])([1-9]|1[0-5])$/);
+    if (m) { out.push({r: 15 - parseInt(m[2]), c: m[1].charCodeAt(0) - 65}); continue; }
+    m = pt.match(/^([1-9]|1[0-5])[,xX-]([1-9]|1[0-5])$/);
+    if (m) out.push({r: parseInt(m[1]) - 1, c: parseInt(m[2]) - 1});
+  }
+  return out.length ? out : null;
+}
+async function saveReplayPosition() {
+  const name0 = document.getElementById('rpPosName').value.trim();
+  const note = document.getElementById('rpSaveNote');
+  if (!name0) { note.textContent = '请输入名称'; note.style.color = '#f87171'; return; }
+  if (!rpStones.length || rpIdx <= 0) { note.textContent = '先回放几步'; note.style.color = '#f87171'; return; }
+  const stones = rpStones.slice(0, rpIdx).map(s => ({r: s.r, c: s.c, v: s.v}));
+  const answer = parseAnswerList(document.getElementById('rpAnsInput').value);
+  const score = (() => { const v = parseFloat(document.getElementById('rpScoreInput').value); return isNaN(v) ? null : v; })();
+  const name = answer ? (name0.startsWith('题目:') ? name0 : '题目:' + name0) : name0;
+  const r = await fetch('/api/positions/save', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, tag: '回放', stones, answer, score})}).then(d => d.json());
+  if (r.ok) {
+    note.textContent = `✅ 已保存「${name}」(${stones.length}子${answer ? '·题目' : ''}${score !== null ? '·评分' : ''})`;
+    note.style.color = '#34d399';
+  } else {
+    note.textContent = '❌ ' + (r.error || '失败');
+    note.style.color = '#f87171';
+  }
+}
+
+// ── ② 中心占比 ──
+function hotColorRGB(t) {
+  t = Math.max(0, Math.min(1, t));
+  return [t < .5 ? 15 : Math.round(255 * (t - .5) * 2),
+          t < .5 ? Math.round(140 * t * 2) : Math.round(255 - 100 * (t - .5) * 2),
+          t < .5 ? Math.round(180 - 100 * t * 2) : 40];
+}
+function drawHeat(cv, data) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width, pad = 24, cell = (W - pad * 2) / 14;
+  const mn = Math.min(...data), mx = Math.max(...data), range = mx - mn || 1;
+  const img = ctx.createImageData(W, W);
+  const buf = img.data;
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const col = hotColorRGB((data[r*15+c] - mn) / range);
+    const x0 = Math.round(pad + c*cell), y0 = Math.round(pad + r*cell);
+    const x1 = Math.round(pad + (c+1)*cell), y1 = Math.round(pad + (r+1)*cell);
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      buf[i] = col[0]; buf[i+1] = col[1]; buf[i+2] = col[2]; buf[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 14; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + 14*cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + 14*cell); ctx.stroke();
+  }
+  ctx.fillStyle = '#c8b090'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 15; i++) {
+    const p = pad + i * cell + cell/2;
+    ctx.fillText(LETTERS[i], p, pad - 10); ctx.fillText(LETTERS[i], p, W - pad + 10);
+    ctx.fillText(15 - i, pad - 10, p); ctx.fillText(15 - i, W - pad + 10, p);
+  }
+}
+async function doCenter() {
+  const iters = [...document.querySelectorAll('#ctIterList input:checked')].map(cb => parseInt(cb.value));
+  if (!iters.length) { alert('请选择代'); return; }
+  document.getElementById('ctStatus').textContent = '统计中…';
+  const r = await fetch(API + '/api/replay/center', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({iters})}).then(d => d.json());
+  if (!r.ok) { document.getElementById('ctStatus').textContent = '❌ ' + r.error; return; }
+  drawHeat(document.getElementById('ctBoard'), r.dist);
+  document.getElementById('ctMain').textContent = (r.center5x5 * 100).toFixed(1) + '%';
+  document.getElementById('ctDetail').textContent =
+    `共 ${r.total} 局 · 天元3×3: ${(r.center3x3*100).toFixed(1)}% · 5×5: ${(r.center5x5*100).toFixed(1)}% · 曼哈顿≤4: ${(r.manhattan4*100).toFixed(1)}%`;
+  document.getElementById('ctTop').innerHTML = r.top5.map((t, i) =>
+    `<div style="margin:3px 0"><span class="tag ${i===0?'best':''}">${LETTERS[t.c]}${15-t.r}</span> ${t.pct}%</div>`).join('');
+  document.getElementById('ctStatus').textContent = `✅ ${r.total} 局统计完成`;
+}
+
+// ── ③ 棋型搜索 ──
+function drawPat() {
+  drawBoard(document.getElementById('patBoard'), patStones.map((s, i) => ({...s, n: i + 1})), null);
+}
+function togglePatColor() {
+  patColor = -patColor;
+  const b = document.getElementById('patColorBtn');
+  b.textContent = patColor === 1 ? '● 黑' : '○ 白';
+  b.style.background = patColor === 1 ? '#111' : '#f8fafc';
+  b.style.color = patColor === 1 ? '#fff' : '#111';
+}
+function patClear() { patStones = []; drawPat(); }
+document.getElementById('patBoard').addEventListener('click', e => {
+  const cv = document.getElementById('patBoard');
+  const rect = cv.getBoundingClientRect();
+  const W = cv.width, pad = 26, cell = (W - pad * 2) / 14;
+  const x = (e.clientX - rect.left) * (W / rect.width), y = (e.clientY - rect.top) * (W / rect.height);
+  let best = -1, br = -1, bc = -1;
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) {
+    const d = Math.hypot(x - (pad + c*cell), y - (pad + r*cell));
+    if (d < cell * 0.5 && (best < 0 || d < best)) { best = d; br = r; bc = c; }
+  }
+  if (br < 0) return;
+  if (patStones.some(s => s.r === br && s.c === bc)) return;
+  patStones.push({r: br, c: bc, v: patColor});
+  drawPat();
+});
+async function doSearch() {
+  const iters = [...document.querySelectorAll('#patIterList input:checked')].map(cb => parseInt(cb.value));
+  if (!patStones.length) { alert('请先摆棋型'); return; }
+  if (!iters.length) { alert('请选择代'); return; }
+  document.getElementById('patStatus').textContent = '🔍 搜索中(需遍历各局各局面, 可能 1-3 分钟)…';
+  const r = await fetch(API + '/api/replay/search', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({stones: patStones, iters, sym: document.getElementById('patSym').checked, limit: 300})}).then(d => d.json());
+  if (!r.ok) { document.getElementById('patStatus').textContent = '❌ ' + r.error; return; }
+  const ms = r.matches;
+  document.getElementById('patStatus').textContent =
+    `✅ 匹配 ${r.count} 处${r.truncated ? ' (已截断)' : ''}`;
+  document.getElementById('patResults').innerHTML = ms.length === 0
+    ? '<div style="color:#64748b;font-size:12px">无匹配 — 该棋型在所选代中未出现</div>'
+    : ms.map((m, i) =>
+      `<div class="match-item" onclick="jumpToMatch(${i})">
+        <b>代 ${m.iter}</b> · 局${m.game} · 第 ${m.step} 局面 (共${m.n_steps}) · 原点 ${LETTERS[m.offset[1]]}${15-m.offset[0]}
+        ${m.sym ? ` · 对称${m.sym}` : ''} → 点击回放</div>`).join('');
+  window._matches = ms;
+}
+async function jumpToMatch(i) {
+  const m = window._matches[i];
+  const r = await fetch(API + '/api/replay/game', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({file: m.file})}).then(d => d.json());
+  if (!r.ok) return;
+  rpStones = r.stones.map((s, j) => ({r: s.r, c: s.c, v: s.v, n: j + 1}));
+  document.getElementById('rpIter').value = m.iter;
+  document.getElementById('rpMeta').textContent = `搜索命中: 代 ${m.iter} · ${m.file}`;
+  rpIdx = m.step;
+  const slider = document.getElementById('rpSlider');
+  slider.min = 0; slider.max = rpStones.length; slider.value = rpIdx;
+  renderRP();
+  document.getElementById('rpBoard').scrollIntoView({behavior: 'smooth'});
+}
+
+initIndex();
+
+// ── ⓪ 胜率趋势 (页面顶部) ──
+//   ★ 2026-10-11: 教练法版本 (v42) 会【自动换边】→ 原始白胜率换边前后口径相反 = 假指标,
+//     改为画【学生胜率曲线】(线色随学生执色翻转) + 换边竖虚线; 无教练版本仍画原始白胜率。
+let wrChart = null;
+let wrSwapIters = [];          // [{x:iter, label:'换边#N'}] —— 换边竖线用
+const wrSwapLinePlugin = {     // 自定义 plugin: 在换边代号处画竖向红虚线并标编号
+  id: 'wrSwapLine',
+  afterDatasetsDraw(chart) {
+    if (!wrSwapIters.length) return;
+    const xA = chart.scales.x, yA = chart.scales.y, ctx = chart.ctx;
+    if (!xA || !yA) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(248,113,113,.8)'; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
+    ctx.fillStyle = '#f87171'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left';
+    wrSwapIters.forEach(sw => {
+      const px = xA.getPixelForValue(sw.x);
+      if (px < xA.left || px > xA.right) return;
+      ctx.beginPath(); ctx.moveTo(px, yA.top); ctx.lineTo(px, yA.bottom); ctx.stroke();
+      ctx.fillText(sw.label, px + 2, yA.top + 9);
+    });
+    ctx.restore();
+  }
+};
+async function loadWhiteRate() {
+  try {
+    // 主线 = 当前所选数据源版本 (v37/v36) + 对比线固定健康基线 v24 (用户拍板, 切主线不重置对比线)
+    const [rmain, r24] = await Promise.all([
+      fetch(API + '/api/replay/white_rate?version=' + VER).then(d => d.json()),
+      fetch(API + '/api/replay/white_rate?version=v24').then(d => d.json())
+    ]);
+    const r36 = rmain;                       // 变量名沿用 r36/r36ok, 实际跟随 VER
+    if (!rmain.ok || !rmain.items.length) return;
+    const its = rmain.items.map(x => x.iter);
+    const rates36 = rmain.items.map(x => x.white_rate);
+    const rates24 = (r24.ok ? r24.items : []).map(x => x.white_rate);
+    const its24 = (r24.ok ? r24.items : []).map(x => x.iter);
+    // 🚨 镜像版口径: 教练执白时, "白胜率"是【教练】的 → 学生(黑)胜率 = 100 − 白胜率,
+    //   两条都画出来并标清楚, 免得把教练胜率当成学生进步 (v39 实踩风险)
+    const META = verMeta();
+    const stuLabel = META ? `学生(${META.student})胜率 %` : null;
+    // 学生胜率换算: 教练执白 → 学生是黑 = 100 − 白胜率; 教练执黑 → 学生是白 = 白胜率 (v38 就是这种)
+    const stuRate = v => (META && META.coach === '白') ? Math.round((100 - v) * 10) / 10 : v;
+    // 学生是白时(v38 类), 白胜率线【本身就是学生】→ 不需要再画一条(否则两线重合, 违反"不重复展示")
+    const stuIsWhite = !!(META && META.student === '白');
+    const needStuLine = !!(META && !stuIsWhite);
+    // 标题/说明行按版本口径改写
+    const _hdr = document.querySelector('#wrSec .sec-title');
+    const _hint = document.getElementById('wrHint');
+    if (_hdr) _hdr.textContent = META
+      ? `⓪ 胜率趋势 (自对弈各代, 黑先固定) — 教练执${META.coach} / 学生${META.student}`
+      : '⓪ 白胜率趋势 (自对弈各代, 黑先固定)';
+    if (_hint) _hint.innerHTML = !META
+      ? '白胜率 = 白胜局 / 总对局 · 健康基线 ~45-50% (先手优势下) · 崩盘信号: 白胜率持续 <20% + 中位手数缩短'
+      : (stuIsWhite
+         ? `本版: 教练执<b style="color:#4ade80">${META.coach}</b> / 学生练<b style="color:#4ade80">${META.student}</b> · `
+           + `白胜率那条<b>就是学生(${META.student})的胜率</b> = 主指标(目标 <b>${META.goal}%</b>) · `
+           + `<span style="color:#64748b">教练(执${META.coach})的成绩不在图上</span>`
+         : `本版: 教练执<b style="color:#4ade80">${META.coach}</b> / 学生练<b style="color:#4ade80">${META.student}</b> · `
+           + `主指标 = <b style="color:#e2e8f0">${stuLabel}</b>(目标 ${META.goal}%) · `
+           + `<span style="color:#64748b">白胜率那条是【教练】的成绩, 与学生进步反向; 绿虚线才是学生</span>`);
+    // {x:it,y:rate} 点对 + linear x轴 — v24 全 52 点不被主线 labels 截断 (2026-09-05)
+    const xy = (itsArr, ratesArr) => ratesArr.map((v, i) => ({ x: itsArr[i], y: v }));
+    const ctx = document.getElementById('whiteRateChart').getContext('2d');
+    if (wrChart) wrChart.destroy();
+    // ══ 教练法分支 (v42 等): 画【学生胜率曲线】+ 换边标记 —— 真实指标, 不被自动换边欺骗 ══
+    if (rmain.coach_mode && (rmain.student_series || []).length) {
+      // 只保留有真实对局的代 (0/0 = 重启空跑 → 排除, 免得出假谷底)
+      const SS = rmain.student_series.filter(s => s.iter != null && s.d > 0);
+      const blackPts = SS.filter(s => s.color === 1).map(s => ({ x: s.iter, y: s.rate }));
+      const whitePts = SS.filter(s => s.color === -1).map(s => ({ x: s.iter, y: s.rate }));
+      const SW = rmain.swaps || [];
+      wrSwapIters = SW.map(s => ({ x: s.iter, label: '换边#' + s.index }));
+      const last = SS[SS.length - 1];
+      const lastColor = last ? (last.color === 1 ? '黑' : '白') : '?';
+      const lastSW = SW.length ? SW[SW.length - 1] : null;
+      if (_hdr) _hdr.textContent = '⓪ 学生胜率趋势 (教练法 · 自动换边) — 学生曲线不被换边翻转口径';
+      if (_hint) _hint.innerHTML =
+        `<b style="color:#4ade80">学生胜率</b> = 学生 vs 冻结教练的胜率(真实指标) · ` +
+        `线色 = 学生当时代执色 (<span style="color:#38bdf8">■黑</span> / <span style="color:#f59e0b">■白</span>) · ` +
+        `红色竖虚线 = 自动换边(学生达标→冻结为新教练, 两边执色翻转) · ` +
+        `换边配置 <span style="color:#94a3b8">${rmain.swap_config || ''}</span> · ` +
+        `<span style="color:#64748b">原始白胜率会因换边翻转口径(假指标), 已隐藏</span>`;
+      const datasets = [];
+      if (blackPts.length) datasets.push({
+        label: `${VER} 学生(黑)胜率 %`, data: blackPts,
+        borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,.12)',
+        fill: false, tension: .3, pointRadius: 2.5, pointBackgroundColor: '#38bdf8'
+      });
+      if (whitePts.length) datasets.push({
+        label: `${VER} 学生(白)胜率 %`, data: whitePts,
+        borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,.12)',
+        fill: false, tension: .3, pointRadius: 2.5, pointBackgroundColor: '#f59e0b'
+      });
+      datasets.push({
+        label: `${VER} 中位手数`, data: rmain.items.map(x => ({ x: x.iter, y: x.steps_med || null })),
+        borderColor: '#a78bfa', borderDash: [5, 3],
+        fill: false, tension: .3, pointRadius: 1.5, yAxisID: 'y1'
+      });
+      wrChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: [], datasets },
+        plugins: [wrSwapLinePlugin],
+        options: {
+          responsive: true,
+          plugins: { legend: { labels: { color: '#94a3b8', font: {size: 11} } } },
+          scales: {
+            x: { type: 'linear', min: 0, title: {display: true, text: '迭代', color: '#64748b'}, ticks: {color: '#94a3b8', maxRotation: 0, autoSkip: true, stepSize: 1} },
+            y: { min: 0, max: 100, title: {display: true, text: '学生胜率 % (线色=学生执色)', color: '#64748b'}, ticks: {color: '#94a3b8', stepSize: 20} },
+            y1: { position: 'right', min: 0, title: {display: true, text: '中位手数', color: '#a78bfa'}, grid: {drawOnChartArea: false}, ticks: {color: '#a78bfa'} }
+          }
+        }
+      });
+      const sq = document.getElementById('wrMeta');
+      const li2 = rmain.items[rmain.items.length - 1];
+      if (sq && last) {
+        sq.innerHTML = `最新 代${last.iter}: 学生(${lastColor})胜率 <b style="color:#4ade80">${last.rate}%</b> (${last.n}/${last.d}局) · ` +
+          `中位手数 <b style="color:#a78bfa">${li2 ? li2.steps_med : '?'}</b> · ` +
+          (lastSW ? `最近换边 <b style="color:#f87171">#${lastSW.index}</b>(代${lastSW.iter}: 教练${lastSW.coach_from > 0 ? '黑' : '白'}→${lastSW.coach_to > 0 ? '黑' : '白'})` : '') +
+          (lastSW && lastSW.iter === last.iter ? ` · <span style="color:#94a3b8">该代末已换边, 下代起学生转${lastSW.student_color_after > 0 ? '黑' : '白'}</span>` : '');
+      }
+      return;
+    }
+    wrSwapIters = [];   // 无教练版本: 不画换边线, 走下面的原始白胜率
+    const datasets = [{
+      label: !META ? `${VER} 白胜率 %`
+             : (stuIsWhite ? `${VER} 白胜率(学生${META.student}) %` : `${VER} 白胜率(教练${META.coach}) %`),
+      data: xy(its, rates36),
+      borderColor: '#e2e8f0',
+      backgroundColor: 'rgba(226,232,240,0.12)',
+      fill: false, tension: .3, pointRadius: 2.5
+    }];
+    if (needStuLine) {   // 学生线 = 100 − 白胜率 (教练执白时才有必要; 教练执黑时白线=学生, 不重复画)
+      datasets.push({
+        label: `${VER} ${stuLabel}`,
+        data: xy(its, rates36.map(v => stuRate(v))),
+        borderColor: '#4ade80', borderDash: [5, 3],
+        fill: false, tension: .3, pointRadius: 2
+      });
+    }
+    if (rates24.length) {
+      datasets.push({
+        label: 'v24 白胜率 %',
+        data: xy(its24, rates24),
+        borderColor: '#fb923c',
+        borderDash: [4, 3],
+        fill: false, tension: .3, pointRadius: 2
+      });
+    }
+    // 中位手数 (右轴) —— 崩盘/学成的关键伴随指标: 手数骤降+白胜率稳 = 速杀变多; 两者同时恶化才是崩盘
+    const meds = rmain.items.map(x => x.steps_med || null);
+    datasets.push({
+      label: `${VER} 中位手数`,
+      data: xy(its, meds),
+      borderColor: '#a78bfa',
+      borderDash: [5, 3],
+      fill: false, tension: .3, pointRadius: 1.5,
+      yAxisID: 'y1'
+    });
+    wrChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels: [], datasets },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#94a3b8', font: {size: 11} } } },
+        scales: {
+          x: { type: 'linear', min: 1, title: {display: true, text: '迭代', color: '#64748b'}, ticks: {color: '#94a3b8', maxRotation: 0, autoSkip: true, stepSize: 1} },
+          y: { min: 0, max: 100, title: {display: true, text: !META ? '白胜率 %' : (stuIsWhite ? `胜率 % (白=学生${META.student})` : `胜率 % (白=教练${META.coach} / 绿虚线=学生${META.student})`), color: '#64748b'}, ticks: {color: '#94a3b8', stepSize: 20} },
+          y1: { position: 'right', min: 0, title: {display: true, text: '中位手数', color: '#a78bfa'}, grid: {drawOnChartArea: false}, ticks: {color: '#a78bfa'} }
+        }
+      }
+    });
+    // 最新一代的两个伴随指标 (速杀率 = 手数 <20 占比, v36 时代沿用口径)
+    const li = rmain.items[rmain.items.length - 1];
+    const sq = document.getElementById('wrMeta');
+    if (sq && li) {
+      sq.innerHTML = `最新 代${li.iter}: ` +
+        (META ? `白胜率(教练${META.coach}) <b style="color:#e2e8f0">${li.white_rate}%</b> · ` +
+                `学生(${META.student})胜率 <b style="color:#4ade80">${stuRate(li.white_rate)}%</b> · `
+              : `白胜率 <b style="color:#e2e8f0">${li.white_rate}%</b> · `) +
+        `中位手数 <b style="color:#a78bfa">${li.steps_med}</b>（${li.steps_min}~${li.steps_max}） · ` +
+        `速杀局(<20手) <b style="color:#fbbf24">${li.quick_rate}%</b> · 共 ${li.total} 局`;
+    }
+  } catch (e) { console.warn('白胜率图加载失败:', e); }
+}
+loadWhiteRate();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# 依赖清单（v24 15×15 五子棋 AlphaZero）
+#
+# 🚨 numpy 必须 < 2：gym 0.26.2 内部用了已删除的 np.bool8，
+#    配 numpy 2.x 会在 env.step() 的 passive checker 里直接 AttributeError。
+#
+# 建环境（isolated，别复用 v4 的 venv）：
+#   uv venv .venv --python 3.12
+#   uv pip install --python .venv/bin/python -r requirements.txt
+
+torch>=2.0.0
+gym==0.26.2
+numpy<2
+pandas>=1.5,<3
+boardgame2==0.26.0
+tensorboard

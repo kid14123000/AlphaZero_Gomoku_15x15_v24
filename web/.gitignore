@@ -1,0 +1,9 @@
+opening_dist_cache.json
+positions.json
+static/tmp_*.png
+creds.local.json
+__pycache__/
+*.pyc
+sync_weights/
+weights_local/
+.bw_store_*.json

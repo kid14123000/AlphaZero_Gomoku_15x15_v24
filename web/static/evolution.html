@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>🧬 开局分布演化</title>
+<style>
+body{background:#0b1220;color:#e2e8f0;font-family:-apple-system,'PingFang SC',sans-serif;margin:0;padding:16px}
+nav{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+nav a{color:#7dd3fc;text-decoration:none;font-size:13px;padding:6px 14px;border:1px solid #334155;border-radius:6px;background:#0f172a}
+nav a:hover{background:#1e293b}
+nav a.active{background:#1e293b;border-color:#7dd3fc;color:#e2e8f0}
+h1{font-size:19px;margin:4px 0}
+.sec{border:1px solid #334155;border-radius:10px;padding:14px;margin:12px 0;background:#0f172a}
+.sec-title{font-weight:bold;color:#f1f5f9;margin-bottom:10px;font-size:14px}
+.card{border:1px solid #334155;border-radius:8px;padding:10px;background:#0f172a}
+.hot-v{color:#fbbf24;font-size:15px;font-weight:bold}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px;background:#334155;color:#e2e8f0}
+.tag.best{background:#7c3aed;color:#fff}
+.ctrl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.ctrl button{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:6px 16px;font-size:13px;cursor:pointer}
+.ctrl button.primary{background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:600}
+.ctrl select,.ctrl input{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:5px 8px;font-size:13px}
+input[type=range]{accent-color:#7c3aed;cursor:pointer;flex:1;min-width:200px}
+#entropyBar,#entropyBar_v6{height:8px;background:#1e293b;border-radius:4px;overflow:hidden;margin:4px 0}
+#entropyFill,#entropyFill_v6{height:100%;background:linear-gradient(90deg,#10b981,#fbbf24,#f87171);transition:width .15s}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/"><i>♟</i> 对弈</a>
+  <a href="/game9"><i>🎯</i> 9×9对弈</a>
+  <a href="/eval"><i>⚔️</i> 棋力测评</a>
+  <a href="/study"><i>🔬</i> 摆谱研究</a>
+  <a href="/dashboard"><i>📊</i> 训练监控</a>
+  <a href="/network"><i>🧠</i> 网络前向</a>
+  <a href="/mcts"><i>🔍</i> MCTS搜索</a>
+  <a href="/evolution" class="active"><i>🧬</i> 开局演化</a>
+  <a href="/replay"><i>🗂</i> 自对弈数据</a>
+<a href="/quiz"><i>📝</i> 出题</a>
+</nav>
+<h1>🧬 权重开局分布演化</h1>
+<div style="color:#94a3b8;font-size:12px;margin:6px 0">
+  每个权重对<b>空盘</b>的 black 第一手 policy 分布 (纯网络, 无 MCTS)。权重按 it 数值序播放 (非字典序)。
+  熵 = 分布均匀度: <b>5.42 = 完全均匀(没学会), 越小 = 越聚焦</b> · 胜率 = 空盘 value 判黑先手优势。
+</div>
+
+<!-- ═══════ v39 (当前主线 · 2026-09-26 镜像教练学习) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟡 v39 (当前主线 · 镜像教练学习: 冻结白方教练(weights_it57_v38 = 58%巅峰) + 只训黑方学生 · 主指标=黑方对 B1 胜率(目标≥80%) · 学生起点 it30 · 门控OFF · 熔断器沿用)</div>
+  <div class="ctrl">
+    <button id="btnPlay" class="primary" onclick="togglePlay('')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed" onchange="updateSpeed('')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider" min="0" max="1" value="0" oninput="onSlider('')">
+    <span id="totalLabel" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v39 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal">—</div>
+        <div id="entropyBar"><div id="entropyFill" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v38 (历史 · 已达标: 白方58% · 之后锯齿下滑) ═══════ -->
+  <div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟢 v38 (历史 · 教练学习: 冻结黑方教练(it30) + 只训白方 · 主指标=白方对 it30 胜率 · 目标55% → it58 达标 58.0% (该成绩实为 weights_it57 打出) · 后期锯齿+低点下沉 → 交棒 v39 · 门控OFF · 空盘value熔断器)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v38" class="primary" onclick="togglePlay('_v38')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v38" onchange="updateSpeed('_v38')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v38" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v38" min="0" max="1" value="0" oninput="onSlider('_v38')">
+    <span id="totalLabel_v38" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v38" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v39 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v38" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v38">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v38"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v38">—</div>
+        <div id="entropyBar_v38"><div id="entropyFill_v38" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v38"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v38" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v37 (历史 · 已终止: 空盘value螺旋污染 it31+) ═══════ -->
+  <div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v37 (历史 · 已终止 · 从零训练开局完全自由(RANDOM_OPEN_MOVES=0) + AGZ权重门控(每10代100局配对, ≥55%晋升) · 死因: 黑1收敛天元→自对弈单边(白胜率4~10%) + 空盘value螺旋(+0.54, 7代不自愈) → 交付回滚 it30)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v37" class="primary" onclick="togglePlay('_v37')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v37" onchange="updateSpeed('_v37')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v37" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v37" min="0" max="1" value="0" oninput="onSlider('_v37')">
+    <span id="totalLabel_v37" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v37" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v39 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v37" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v37">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v37"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v37">—</div>
+        <div id="entropyBar_v37"><div id="entropyFill_v37" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v37"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v37" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v36 (历史 · 已停训) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v36 (历史 · 种子=v35 it19全键 · 前3手黑白黑100%随机落中心7x7 治先手红利 · 后期瓶颈: 白1节点从未被训练)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v36" class="primary" onclick="togglePlay('_v36')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v36" onchange="updateSpeed('_v36')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v36" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v36" min="0" max="1" value="0" oninput="onSlider('_v36')">
+    <span id="totalLabel_v36" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v36" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v36 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v36" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v36">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v36"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v36">—</div>
+        <div id="entropyBar_v36"><div id="entropyFill_v36" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v36"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v36" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v35 (历史) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v35 (历史 · 已停训 it20 · 环带让手+温度前段快速降温B热改: PK ring 10:10对种子零增益, 白防守未学会, 正常局白未爬升=距天元5-8子环带124点随机: v34让手太狠修正 让手局白96%→目标65-75%留黑翻盘面教后手防守 · 种子=v34 it8全键 · it1起训)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v35" class="primary" onclick="togglePlay('_v35')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v35" onchange="updateSpeed('_v35')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v35" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v35" min="0" max="1" value="0" oninput="onSlider('_v35')">
+    <span id="totalLabel_v35" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v35" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v35 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v35" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v35">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v35"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v35">—</div>
+        <div id="entropyBar_v35"><div id="entropyFill_v35" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v35"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v35" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v34 (历史 · 已停训 it11) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v34 (历史 · 已停训 it11 · 让手太狠: 让手局白96%黑后手翻盘4%→后手防守样本真空→正常局白7-10%崩: v33全配置+强制落角点人为让先 · 治先手兑现+数据单边化 · it1起训)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v34" class="primary" onclick="togglePlay('_v34')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v34" onchange="updateSpeed('_v34')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v34" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v34" min="0" max="1" value="0" oninput="onSlider('_v34')">
+    <span id="totalLabel_v34" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v34" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v34 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v34" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v34">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v34"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v34">—</div>
+        <div id="entropyBar_v34"><div id="entropyFill_v34" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v34"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v34" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v33 (历史 · 已停训 it10) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v33 (历史 · 已停训 it10 · value标签=搜索Q软标签: value全健康但it10白12%崩 = 先手兑现+数据单边非value偏色)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v33" class="primary" onclick="togglePlay('_v33')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v33" onchange="updateSpeed('_v33')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v33" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v33" min="0" max="1" value="0" oninput="onSlider('_v33')">
+    <span id="totalLabel_v33" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v33" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v33 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v33" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v33">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v33"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v33">—</div>
+        <div id="entropyBar_v33"><div id="entropyFill_v33" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v33"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v33" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v32 (历史 · 已停训) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v32 (历史 · 已停训 · 种子v24it73+重置value: ±1标签下value极端化, it10白37%判决中停)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v32" class="primary" onclick="togglePlay('_v32')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v32" onchange="updateSpeed('_v32')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v32" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v32" min="0" max="1" value="0" oninput="onSlider('_v32')">
+    <span id="totalLabel_v32" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v32" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v32 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v32" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v32">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v32"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v32">—</div>
+        <div id="entropyBar_v32"><div id="entropyFill_v32" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v32"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v32" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v31 (历史 · 已停训 it7 空转) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v31 (历史 · 已停训 it7 · forced playouts: 功能测试覆盖17%→100%但policy空转≈随机, 白防饿死非唯一病根)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v31" class="primary" onclick="togglePlay('_v31')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v31" onchange="updateSpeed('_v31')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v31" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v31" min="0" max="1" value="0" oninput="onSlider('_v31')">
+    <span id="totalLabel_v31" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v31" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v31 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v31" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v31">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v31"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v31">—</div>
+        <div id="entropyBar_v31"><div id="entropyFill_v31" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v31"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v31" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v30 (历史 · 已停训 it17) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v30 (历史 · 已停训 it17 · 极简value头回归v18: value头复杂度排除, it16白8%崩)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v30" class="primary" onclick="togglePlay('_v30')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v30" onchange="updateSpeed('_v30')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v30" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v30" min="0" max="1" value="0" oninput="onSlider('_v30')">
+    <span id="totalLabel_v30" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v30" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v29 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v30" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v30">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v30"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v30">—</div>
+        <div id="entropyBar_v30"><div id="entropyFill_v30" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v30"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v30" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v29 (历史 · 已停训 it13 崩盘) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v29 (历史 · 已停训 it13? · c_init 1.25→3.5: 崩盘 it13白15.7%/黑白6.3:1)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v29" class="primary" onclick="togglePlay('_v29')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v29" onchange="updateSpeed('_v29')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v29" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v29" min="0" max="1" value="0" oninput="onSlider('_v29')">
+    <span id="totalLabel_v29" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v29" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v29 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v29" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v29">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v29"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v29">—</div>
+        <div id="entropyBar_v29"><div id="entropyFill_v29" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v29"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v29" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v28 (历史 · 已停训 it28 · 温度线性降温: 防死透不防崩, value 100%饱和) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v28 (历史 · 已停训 it28 · 温度线性降温实验: 防死透(崩后震荡13-56%不固化)但防不了崩, value 100%饱和 + 做题崩后暴涨=背熟坍缩定式)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v28" class="primary" onclick="togglePlay('_v28')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v28" onchange="updateSpeed('_v28')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v28" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v28" min="0" max="1" value="0" oninput="onSlider('_v28')">
+    <span id="totalLabel_v28" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v28" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v28 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v28" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v28">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v28"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v28">—</div>
+        <div id="entropyBar_v28"><div id="entropyFill_v28" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v28"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v28" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- ═══════ v27 (历史 · 已停训 it34 · value loss 降权实验 λ0.3 非解药) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v27 (历史 · 已停训 it34 · value loss 降权 λ0.3: 压住value抢跑但非解药, 单次注入崩盘固化 it30-34 白6-9%)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v27" class="primary" onclick="togglePlay('_v27')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v27" onchange="updateSpeed('_v27')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v27" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v27" min="0" max="1" value="0" oninput="onSlider('_v27')">
+    <span id="totalLabel_v27" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v27" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v27 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v27" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v27">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v27"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v27">—</div>
+        <div id="entropyBar_v27"><div id="entropyFill_v27" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v27"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v27" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v26 (历史) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v26 (历史 · 已停 it44 · α对照实验)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v26" class="primary" onclick="togglePlay('_v26')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v26" onchange="updateSpeed('_v26')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v26" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v26" min="0" max="1" value="0" oninput="onSlider('_v26')">
+    <span id="totalLabel_v26" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v26" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v26 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v26" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v26">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v26"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v26">—</div>
+        <div id="entropyBar_v26"><div id="entropyFill_v26" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v26"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v26" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v25 历史 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v25 (历史 · 样本量实验: v24全同配置+每代1000局 · 已崩停训 it5)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v25" class="primary" onclick="togglePlay('_v25')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v25" onchange="updateSpeed('_v25')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v25" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v25" min="0" max="1" value="0" oninput="onSlider('_v25')">
+    <span id="totalLabel_v25" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v25" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v25 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v25" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v25">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v25"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v25">—</div>
+        <div id="entropyBar_v25"><div id="entropyFill_v25" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v25"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v25" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════ v24 历史 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v24 (历史 · 冷启动防抢跑: 冻结value头训policy + value loss降权 · ch2恒1 · 已停训)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v24" class="primary" onclick="togglePlay('_v24')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v24" onchange="updateSpeed('_v24')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v24" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v24" min="0" max="1" value="0" oninput="onSlider('_v24')">
+    <span id="totalLabel_v24" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v24" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v24 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v24" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v24">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v24"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v24">—</div>
+        <div id="entropyBar_v24"><div id="entropyFill_v24" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v24"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v24" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════ v23 历史 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v23 (历史 · 重置value头+冻结10代 · 继承v21b it32 · 已停训 it64+)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v23" class="primary" onclick="togglePlay('_v23')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v23" onchange="updateSpeed('_v23')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v23" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v23" min="0" max="1" value="0" oninput="onSlider('_v23')">
+    <span id="totalLabel_v23" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v23" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v23 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v23" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v23">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v23"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v23">—</div>
+        <div id="entropyBar_v23"><div id="entropyFill_v23" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v23"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v23" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v19 (历史) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v19 (历史 · value头fc隐藏层 + 继承v18 it180 · 已停训 it210)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v19" class="primary" onclick="togglePlay('_v19')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v19" onchange="updateSpeed('_v19')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v19" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v19" min="0" max="1" value="0" oninput="onSlider('_v19')">
+    <span id="totalLabel_v19" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v19" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v19 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v19" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v19">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v19"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v19">—</div>
+        <div id="entropyBar_v19"><div id="entropyFill_v19" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v19"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v19" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v18 (历史) ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v18 (历史 · ch2修复 + 每步真800 + 中盘贪心 · 已停训 it180)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v18" class="primary" onclick="togglePlay('_v18')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v18" onchange="updateSpeed('_v18')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v18" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v18" min="0" max="1" value="0" oninput="onSlider('_v18')">
+    <span id="totalLabel_v18" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v18" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v18 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v18" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v18">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v18"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v18">—</div>
+        <div id="entropyBar_v18"><div id="entropyFill_v18" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v18"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v18" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v14 历史 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v14 (历史 · 论文式FC头 15×15 · 已存档 it80+)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v14" class="primary" onclick="togglePlay('_v14')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v14" onchange="updateSpeed('_v14')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v14" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v14" min="0" max="1" value="0" oninput="onSlider('_v14')">
+    <span id="totalLabel_v14" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v14" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v14 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v14" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v14">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v14"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v14">—</div>
+        <div id="entropyBar_v14"><div id="entropyFill_v14" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v14"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v14" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v12 历史 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v12 (历史 · 每局reset + count修复 · 已停训 it190 · 脉冲式布局)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v12" class="primary" onclick="togglePlay('_v12')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v12" onchange="updateSpeed('_v12')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v12" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v12" min="0" max="1" value="0" oninput="onSlider('_v12')">
+    <span id="totalLabel_v12" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v12" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v14 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v12" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v12">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v12"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v12">—</div>
+        <div id="entropyBar_v12"><div id="entropyFill_v12" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v12"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v12" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v16 历史 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v16 (历史 · GN 9×9 试验版 · 已定格 it136)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v16" class="primary" onclick="togglePlay('_v16')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v16" onchange="updateSpeed('_v16')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v16" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v16" min="0" max="1" value="0" oninput="onSlider('_v16')">
+    <span id="totalLabel_v16" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v16" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v16 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v16" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v16">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v16"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v16">—</div>
+        <div id="entropyBar_v16"><div id="entropyFill_v16" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v16"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v16" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v8 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v10 (历史 · 已存档 it77 · 一代一树污染数据)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v10" class="primary" onclick="togglePlay('_v10')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v10" onchange="updateSpeed('_v10')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v10" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v10" min="0" max="1" value="0" oninput="onSlider('_v10')">
+    <span id="totalLabel_v10" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v10" style="font-size:12px;color:#94a3b8">⏳ 正在计算 v10 空盘分布…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v10" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v10">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v10"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v10">—</div>
+        <div id="entropyBar_v10"><div id="entropyFill_v10" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v10"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v10" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v8 ═══════ -->
+<div class="sec" style="border-color:#7c3aed">
+  <div class="sec-title">🟣 v8 (历史 · 已判废存档 it215)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v8" class="primary" onclick="togglePlay('_v8')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v8" onchange="updateSpeed('_v8')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v8" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v8" min="0" max="1" value="0" oninput="onSlider('_v8')">
+    <span id="totalLabel_v8" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v8" style="font-size:12px;color:#94a3b8">⏳ 正在计算空盘分布 (首次约 30-60s, 之后走缓存)…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v8" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v8">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v8"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v8">—</div>
+        <div id="entropyBar_v8"><div id="entropyFill_v8" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v8"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v8" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ v6 ═══════ -->
+<div class="sec" style="border-color:#0ea5e9">
+  <div class="sec-title">🔵 v6 (观察实验 · 1通道 · 已停训定格 it116)</div>
+  <div class="ctrl">
+    <button id="btnPlay_v6" class="primary" onclick="togglePlay('_v6')">▶ 自动播放</button>
+    <label style="font-size:12px;color:#94a3b8">间隔
+      <select id="speed_v6" onchange="updateSpeed('_v6')">
+        <option value="300">0.3s</option>
+        <option value="700" selected>0.7s</option>
+        <option value="1500">1.5s</option>
+      </select>
+    </label>
+    <span id="idxLabel_v6" style="font-size:14px;color:#7dd3fc;min-width:90px;text-align:center">it0</span>
+    <input type="range" id="slider_v6" min="0" max="1" value="0" oninput="onSlider('_v6')">
+    <span id="totalLabel_v6" style="font-size:12px;color:#64748b;white-space:nowrap">加载中…</span>
+  </div>
+  <div id="status_v6" style="font-size:12px;color:#94a3b8">⏳ 正在计算空盘分布 (117 个权重, 首次约 60-90s, 之后走缓存)…</div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">
+    <canvas id="boardCanvas_v6" width="420" height="420" style="border:1px solid #334155;border-radius:6px"></canvas>
+    <div style="flex:1;min-width:260px">
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">📈 黑方胜率 (空盘 value)</div>
+        <div style="font-size:24px;color:#34d399" id="winrateVal_v6">—</div>
+        <div style="font-size:11px;color:#64748b" id="winrateNote_v6"></div>
+      </div>
+      <div class="card" style="margin-bottom:10px">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:4px">🎲 分布均匀度 (熵)</div>
+        <div style="font-size:24px;color:#fbbf24" id="entropyVal_v6">—</div>
+        <div id="entropyBar_v6"><div id="entropyFill_v6" style="width:0%"></div></div>
+        <div style="font-size:11px;color:#64748b" id="entropyNote_v6"></div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">🎯 Top 落点 (按概率)</div>
+        <div id="topList_v6" style="font-size:13px;color:#e2e8f0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const LETTERS = 'ABCDEFGHIJKLMNO';
+const API = '';
+const players = {};
+
+// ── 热力图 (含坐标, 标在格子中心) ──
+function hotColorRGB(t) {
+  t = Math.max(0, Math.min(1, t));
+  const r = t < .5 ? 15 : Math.round(255 * (t - .5) * 2);
+  const g = t < .5 ? Math.round(140 * t * 2) : Math.round(255 - 100 * (t - .5) * 2);
+  const b = t < .5 ? Math.round(180 - 100 * t * 2) : 40;
+  return [r, g, b];
+}
+function drawHeatCoord(cv, data, stones, markTop, N) {
+  const ctx = cv.getContext('2d');
+  const W = cv.width;
+  N = N || 15;  // v16 是 9×9, 其余 15×15
+  const pad = 26, cell = (W - pad * 2) / (N - 1);
+  ctx.clearRect(0, 0, W, W);
+  let mn = Infinity, mx = -Infinity;
+  data.forEach(v => { if (v > mx) mx = v; if (v < mn) mn = v; });
+  const range = mx - mn || 1;
+  // 热力: ImageData 像素缓冲一次性写入
+  const img = ctx.createImageData(W, W);
+  const buf = img.data;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      const col = hotColorRGB((data[r*N+c] - mn) / range);
+      const x0 = Math.round(pad + c * cell), y0 = Math.round(pad + r * cell);
+      const x1 = Math.round(pad + (c + 1) * cell), y1 = Math.round(pad + (r + 1) * cell);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = (y * W + x) * 4;
+          buf[i] = col[0]; buf[i+1] = col[1]; buf[i+2] = col[2]; buf[i+3] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 0.5;
+  for (let i = 0; i <= N - 1; i++) {
+    const p = pad + i * cell;
+    ctx.beginPath(); ctx.moveTo(pad, p); ctx.lineTo(pad + (N - 1) * cell, p); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p, pad); ctx.lineTo(p, pad + (N - 1) * cell); ctx.stroke();
+  }
+  ctx.fillStyle = '#c8b090'; ctx.font = Math.max(10, Math.round(W * 0.03)) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < N; i++) {
+    const p = pad + i * cell + cell / 2;
+    ctx.fillText(LETTERS[i], p, pad - 12); ctx.fillText(LETTERS[i], p, W - pad + 12);
+    ctx.fillText(N - i, pad - 12, p); ctx.fillText(N - i, W - pad + 12, p);
+  }
+  if (stones) (stones || []).forEach(s => {
+    const x = pad + s.c * cell + cell/2, y = pad + s.r * cell + cell/2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.34, 0, Math.PI * 2);
+    ctx.fillStyle = s.v === 1 ? '#111' : '#f8fafc';
+    ctx.fill();
+    ctx.strokeStyle = s.v === 1 ? '#fff' : '#111'; ctx.lineWidth = 0.8;
+    ctx.stroke();
+  });
+  if (markTop) markTop.forEach(t => {
+    const x = pad + t.c * cell + cell/2, y = pad + t.r * cell + cell/2;
+    ctx.beginPath(); ctx.arc(x, y, cell * 0.44, 0, Math.PI * 2);
+    ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2; ctx.stroke();
+  });
+}
+
+// ── 渲染 (prefix = '' 或 '_v6'), rAF 节流合并高频拖动 ──
+function scheduleRender(prefix) {
+  const st = players[prefix];
+  if (!st || st.raf) return;
+  st.raf = requestAnimationFrame(() => { st.raf = null; render(prefix); });
+}
+function render(prefix) {
+  const st = players[prefix];
+  const it = st.items[st.idx];
+  if (!it) return;
+  const $ = id => document.getElementById(id + prefix);
+  const N = st.boardSize || 15;
+  $('idxLabel').textContent = `it${it.it}`;
+  $('slider').value = st.idx;
+  drawHeatCoord($('boardCanvas'), it.dist, null, it.top.slice(0, 1), N);
+  // 胜率
+  $('winrateVal').textContent = it.winrate + '%';
+  $('winrateVal').style.color = it.winrate >= 50 ? '#34d399' : '#f87171';
+  $('winrateNote').textContent =
+    `value=${it.value >= 0 ? '+' : ''}${it.value} (黑视角, 空盘先手)` +
+    (it.winrate >= 55 ? ' · 黑明显占优' : it.winrate >= 51 ? ' · 黑略优' : it.winrate <= 45 ? ' · 黑劣势⚠️' : ' · 接近均衡');
+  // 熵
+  const MAX = Math.log(N * N);
+  $('entropyVal').textContent = it.entropy;
+  const pct = Math.min(100, Math.round(100 * (1 - it.entropy / MAX)));
+  $('entropyFill').style.width = pct + '%';
+  $('entropyNote').textContent =
+    it.entropy > MAX * 0.95 ? '近均匀: policy 还没学会开局' :
+    it.entropy > MAX * 0.7 ? '轻度聚焦: 开始有偏好' :
+    '聚焦: 开局已有明确要点';
+  // top5
+  $('topList').innerHTML = it.top.map((t, i) =>
+    `<div style="margin:3px 0"><span class="tag ${i === 0 ? 'best' : ''}">${LETTERS[t.c]}${N - t.r}</span> ` +
+    `<span>${t.pct}%</span></div>`).join('');
+}
+
+function onSlider(prefix) {
+  stopPlay(prefix);
+  players[prefix].idx = parseInt(document.getElementById('slider' + prefix).value);
+  scheduleRender(prefix);
+}
+function togglePlay(prefix) {
+  if (players[prefix].timer) stopPlay(prefix);
+  else startPlay(prefix);
+}
+function startPlay(prefix) {
+  const btn = document.getElementById('btnPlay' + prefix);
+  btn.textContent = '⏸ 暂停';
+  btn.style.background = '#db2777';
+  players[prefix].timer = setInterval(() => {
+    players[prefix].idx = (players[prefix].idx + 1) % players[prefix].items.length;
+    scheduleRender(prefix);
+  }, parseInt(document.getElementById('speed' + prefix).value));
+}
+function stopPlay(prefix) {
+  if (players[prefix].timer) { clearInterval(players[prefix].timer); players[prefix].timer = null; }
+  const btn = document.getElementById('btnPlay' + prefix);
+  btn.textContent = '▶ 自动播放';
+  btn.style.background = '';
+}
+function updateSpeed(prefix) {
+  if (players[prefix].timer) { stopPlay(prefix); startPlay(prefix); }
+}
+
+// ── 加载数据 ──
+async function loadVersion(version, prefix) {
+  const $ = id => document.getElementById(id + prefix);
+  const r = await fetch(API + '/api/opening_dist', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({version: version})}).then(d => d.json());
+  if (!r.ok) { $('status').textContent = '❌ ' + (r.error || '加载失败'); return; }
+  players[prefix] = {items: r.items, timer: null, idx: 0,
+                     boardSize: version === 'v16' ? 9 : 15};  // v16 是 9×9
+  const n = r.items.length;
+  $('slider').max = n - 1;
+  $('totalLabel').textContent = `/ ${n} 个权重 (it${r.items[0].it} ~ it${r.items[n-1].it})`;
+  $('status').textContent =
+    (r.cached ? '✅ 走缓存' : '✅ 计算完成') +
+    ` · ${n} 个权重 · 顺序 ${r.items.slice(0, 5).map(x => x.it).join(', ')}…→it${r.items[n-1].it}` +
+    (r.skipped && r.skipped.length ? ` · ⚠️ 跳过损坏: ${r.skipped.map(s => 'it' + s.it).join(',')}` : '');
+  render(prefix);
+}
+loadVersion('v39', '');
+loadVersion('v38', '_v38');   // 历史 (已达标 58%)
+loadVersion('v37', '_v37');   // 历史 (已终止: 螺旋污染)
+loadVersion('v36', '_v36');
+loadVersion('v35', '_v35');
+loadVersion('v34', '_v34');
+loadVersion('v33', '_v33');
+loadVersion('v32', '_v32');
+loadVersion('v31', '_v31');
+loadVersion('v30', '_v30');
+loadVersion('v29', '_v29');
+loadVersion('v28', '_v28');
+loadVersion('v27', '_v27');
+loadVersion('v26', '_v26');
+loadVersion('v24', '_v24');
+loadVersion('v23', '_v23');
+loadVersion('v19', '_v19');
+loadVersion('v18', '_v18');
+loadVersion('v12', '_v12');
+loadVersion('v14', '_v14');
+loadVersion('v16', '_v16');
+loadVersion('v10', '_v10');
+loadVersion('v8', '_v8');
+loadVersion('v6', '_v6');
+</script>
+</body>
+</html>
