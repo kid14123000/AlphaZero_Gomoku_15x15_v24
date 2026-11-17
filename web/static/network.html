@@ -746,7 +746,8 @@ function drawKernel() {
     ctx.strokeRect(0, c * S, 3 * S, 3 * S);
   }
   ctx.fillStyle = '#94a3b8'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
-  ['ch0当前', 'ch1对手', 'ch2视角', 'ch3上步'].forEach((t, i) => {
+  // v24 起 ch2 恒定 1.0（撤销 v18 的执色编码）→ 标签不能再写"视角"
+  ['ch0当前', 'ch1对手', 'ch2恒1', 'ch3上步'].forEach((t, i) => {
     ctx.fillText(t, 3 * S / 2, i * S + 3 * S + 8);
   });
 }

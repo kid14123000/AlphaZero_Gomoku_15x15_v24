@@ -122,6 +122,16 @@ TEMP_LOW_MOVES = 10        # 保留定义(不再使用, 旧调度废弃)
 DIRICHLET_ALPHA = 0.03     # v2: 固定0.03 (v1是 1/N ≈ 0.0045)
 REPLAY_POOL_SIZE = 5       # 保留最近5代数据混合训练
 
+# ── v24c: 开局过滤（AlphaGomoku OpeningGenerator 思路）──────────────
+# 双方随机下 n_open 手（中心加权），评估 |V|；太大则整局丢弃重抽。
+# 我们 value 标度是 [-1,1]（0=均势）；AG 的 win-prob 标度 |V-0.5|<0.1 换算过来是 |V|<0.2。
+# 实测当前网络随机开局 |V| 分布 P50=0.13 P90=0.32 max=0.48 ⇒ 阈值取 0.25（接受约 80%）。
+OPEN_FILTER = int(os.environ.get('GOMOKU_OPEN_FILTER', '0'))
+OPEN_VTH = float(os.environ.get('GOMOKU_OPEN_VTH', '0.25'))
+OPEN_VTH_STEP = float(os.environ.get('GOMOKU_OPEN_VTH_STEP', '0.02'))
+OPEN_TRIALS = int(os.environ.get('GOMOKU_OPEN_TRIALS', '12'))
+OPEN_MAX = int(os.environ.get('GOMOKU_OPEN_MAX', '15'))
+
 # ─────────────────────────────────────────────
 # 网络（与 v1 相同）
 # ─────────────────────────────────────────────
@@ -621,6 +631,64 @@ class AlphaZeroAgent:
 # ─────────────────────────────────────────────
 # 自我对弈（v2: temperature 调度 + 开局约束）
 # ─────────────────────────────────────────────
+def _gen_filtered_opening(env, agent):
+    """v24c: 生成一段"均衡"随机开局。
+
+    返回 (prefix, observation, last_move)
+      prefix      trajectory 前缀 [(player, board, prob), ...]（prob 用网络原始策略，自洽且便宜）
+      observation 开局结束时的观测（env 已推进到该局面）
+      last_move   最后一步坐标（np.array）或 None（0 手开局）
+    """
+    n = env.board.shape[0]
+    ctr = n // 2
+    th = OPEN_VTH
+    for trial in range(OPEN_TRIALS):
+        agent.reset_mcts()
+        obs, _ = env.reset()
+        n_open = 0 if np.random.randint(1000) == 0 else int(
+            np.random.randint(6) + np.random.randint(6) + np.random.randint(6))
+        n_open = int(min(n_open, OPEN_MAX))
+        prefix, last_xy, bad = [], None, False
+        for _ in range(n_open):
+            board, player = obs
+            empty = np.argwhere(board == 0)
+            if len(empty) == 0:
+                bad = True
+                break
+            d = np.maximum(np.abs(empty[:, 0] - ctr), np.abs(empty[:, 1] - ctr))
+            w = 1.0 / (1.0 + 0.35 * d * d)
+            w = w / w.sum()
+            r, cc = empty[np.random.choice(len(empty), p=w)]
+            canon = player * board
+            p, _ = agent.predict_inference(canon[None], None, None)
+            p = np.asarray(p).reshape(n, n) * (board == 0)
+            tot = p.sum()
+            prob = p / tot if tot > 0 else (board == 0) / float((board == 0).sum())
+            prefix.append((player, board.copy(), prob))
+            obs, _r, term, trunc, _i = env.step((int(r), int(cc)))
+            last_xy = (int(r), int(cc))
+            if term or trunc:
+                bad = True
+                break
+        if bad:
+            th += OPEN_VTH_STEP
+            continue
+        board, player = obs
+        canon = player * board
+        _, v = agent.predict_inference(canon[None], None, None)
+        v = float(np.asarray(v).reshape(-1)[0])
+        if abs(v) < th:
+            logging.info('开局过滤: 第%d次尝试通过 手数=%d |V|=%.3f (阈值 %.2f)',
+                         trial + 1, len(prefix), abs(v), th)
+            return prefix, obs, (np.array(last_xy, dtype=int) if last_xy else None)
+        th += OPEN_VTH_STEP
+    # 兜底：全都不过 ⇒ 用 0 手开局（完全交给模型），保证不卡死
+    logging.warning('开局过滤: %d 次尝试全未通过，本局退回 0 手开局', OPEN_TRIALS)
+    agent.reset_mcts()
+    obs, _ = env.reset()
+    return [], obs, None
+
+
 def self_play(env, agent, return_trajectory=False, verbose=False,
               visualize=False, temperature_schedule=True, force_center=False):
     # ⚠️ 2026-08-15 修复: 每局开始必须 reset_mcts() (标准 AlphaZero 每局独立搜索树)
@@ -632,7 +700,15 @@ def self_play(env, agent, return_trajectory=False, verbose=False,
     observation, _ = env.reset()
     max_moves = env.board.size
     last_move = None
-    for step in itertools.count():
+    # ── v24c: 开局过滤（随机开局 + |V| 太大则重抽）──
+    if OPEN_FILTER:
+        _prefix, observation, last_move = _gen_filtered_opening(env, agent)
+        if return_trajectory:
+            trajectory.extend(_prefix)
+        opening_len = len(_prefix)
+    else:
+        opening_len = 0
+    for step in itertools.count(opening_len):
         if step >= max_moves:
             break
         board, player = observation
@@ -1372,9 +1448,15 @@ def train(config=None):
         except Exception as e:
             logging.warning('TensorBoard 写入失败: {}'.format(e))
 
-        # v24b: 工兵由外部启动器管理（常驻轮询 metadata 自动接代）
-        # 原代码每代末用 screen 再起 9 个 → 与人工启动的 9 个重复，共 18 个在产局
-        logging.info('工兵由外部管理，跳过自动 spawn')
+        # ── 重启工兵 ──
+        for wid in range(config.get('worker_count', 9)):
+            # 用 >> 追加日志，避免覆盖旧日志（历史教训: > 会清空旧日志）
+            cmd = 'screen -dmS gomoku_w{} bash -c "{} -u {} {} >> {} 2>&1"'.format(
+                wid, sys.executable,
+                os.path.join(SCRIPT_DIR, 'Gomoku-worker_v24.py'),
+                wid, os.path.join(SCRIPT_DIR, 'worker_v24_{}.log'.format(wid)))
+            os.system(cmd)
+        logging.info('{}个工兵(v24)已重启'.format(config.get('worker_count', 9)))
 
 
 if __name__ == '__main__':

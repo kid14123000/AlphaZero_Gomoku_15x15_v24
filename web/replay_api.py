@@ -18,11 +18,14 @@ PROJ = os.path.dirname(SCRIPT_DIR)
 #   (以前这里写死 'v39', 与 app.py 的 TRAIN_VERSION / 页面 _pref 各改一次 → 漏一处就错位 ✗)
 #   切换 = `python3 gomoku_web/set_slot.py vNN` (会重启 web)
 try:
-    from slot_config import active_cfg as _active_cfg
+    from slot_config import active_cfg as _active_cfg, SLOT_META as _SLOT_META
     DEFAULT_VERSION = _active_cfg()['slot']
 except Exception:
+    _active_cfg = None
+    _SLOT_META = {}
     DEFAULT_VERSION = 'v39'
-KNOWN_VERSIONS = ['v42', 'v41', 'v40', 'v39', 'v39r6', 'v39r3', 'v39r1', 'v38', 'v38r4', 'v38r2', 'v38r1', 'v37', 'v36', 'v29', 'v26', 'v24']
+KNOWN_VERSIONS = ['v24b', 'v24', 'v42', 'v41', 'v40', 'v39', 'v39r6', 'v39r3', 'v39r1',
+                  'v38', 'v38r4', 'v38r2', 'v38r1', 'v37', 'v36', 'v29', 'v26']
 
 
 def _ver_paths(version):
@@ -31,17 +34,35 @@ def _ver_paths(version):
     ★ 归档回退 (2026-10-01): 轮次归档会把 gomoku_checkpoints_v39/ 改名成
       gomoku_checkpoints_v39_round6/ → 主目录消失, 复盘页读不到 ✗
       → 主目录不在就回退最新的 <槽>_round* (只读, 不会混写)
+    ★ 2026-11-16: 目录名不一定能从槽号派生 —— v24b 槽的训练脚本里 VERSION 仍是 "v24"，
+      权重和数据目录都叫 gomoku_checkpoints_v24。由 slot_config 的 ckpt_basename 指定，
+      否则 v24b 会去找不存在的 gomoku_checkpoints_v24b，索引永远读不到。
     """
-    d = os.path.join(PROJ, f'gomoku_checkpoints_{version}')
-    if not os.path.isdir(d):
-        import glob as _glob, re as _re
-        cands = []
-        for p in _glob.glob(d + '_round*'):
-            m = _re.search(r'_round(\d+)$', p)
-            if m and os.path.isdir(p):
-                cands.append((int(m.group(1)), p))
-        if cands:
-            d = sorted(cands)[-1][1]
+    candidates = []
+    if _active_cfg:
+        try:
+            cfg = _active_cfg(override=version)
+            if cfg.get('ckpt_basename'):
+                candidates.append(cfg['ckpt_basename'])
+        except Exception:
+            pass
+        meta = (_SLOT_META or {}).get(version) or {}
+        if meta.get('ckpt_basename') and meta['ckpt_basename'] not in candidates:
+            candidates.append(meta['ckpt_basename'])
+    candidates.append(f'gomoku_checkpoints_{version}')
+    for name in candidates:
+        d = os.path.join(PROJ, name)
+        if os.path.isdir(d):
+            return os.path.join(d, 'worker_data'), os.path.join(d, 'replay_pool_index.json')
+    d = os.path.join(PROJ, candidates[0])
+    import glob as _glob, re as _re
+    cands = []
+    for p in _glob.glob(d + '_round*'):
+        m = _re.search(r'_round(\d+)$', p)
+        if m and os.path.isdir(p):
+            cands.append((int(m.group(1)), p))
+    if cands:
+        d = sorted(cands)[-1][1]
     return os.path.join(d, 'worker_data'), os.path.join(d, 'replay_pool_index.json')
 
 

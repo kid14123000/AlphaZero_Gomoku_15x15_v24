@@ -116,10 +116,16 @@ function switchSlot() {
     <div class="progress-track"><div class="progress-fill" id="kpiFill" style="width:0%;background:#4ade80"></div></div>
     <div class="sub" id="kpiBox" style="line-height:1.7">—</div>
   </div>
+  <!-- ★ 2026-11-16 用户: "空盘VALUE 熔断器这个应该暂时没开吧，先不需要这个"
+       事实核对：Gomoku-v0_pt_v24b.py 里 **完全没有** 熔断器逻辑（grep spiral/熔断 零命中），
+       只有 gomoku_web 这套只读监控在按 v38 时代的规则推测状态。
+       卡片上那句「连3代上升且>0.25 → 回滚到<0.15」会让人以为训练真的会自动回滚 —— 是误导，故整卡移除。
+       要恢复：把下面注释掉的 HTML 放回来即可（JS 渲染段仍保留，元素缺失时自动跳过）。
   <div class="card" style="flex:1;border:1px solid #7c2d12">
-    <div class="card-title">🔥 空盘value 熔断器 <span id="spiralSub" style="color:#fb923c;font-weight:400">连3代上升且&gt;0.25 → 回滚到&lt;0.15</span></div>
+    <div class="card-title">🔥 空盘value 熔断器 <span id="spiralSub" ...></span></div>
     <div class="sub" id="spiralBox" style="line-height:1.8">—</div>
   </div>
+  -->
 </div>
 
 <div class="row">
@@ -275,8 +281,14 @@ function update(d){
     const _mm = d.slot_mismatch
       ? ` ⚠ 服务器实际在跑 ${d.slot_running}（本 web 配置 ${d.slot_config}）→ 修: python3 gomoku_web/set_slot.py ${d.slot_running}`
       : '';
-    _vl.innerHTML=`${TV} 驾驶舱 · 手动刷新 (防SSH限流)`+
-      (_mm?`<span style="color:#f87171;font-weight:600">${_mm}</span>`:'');
+    // ★ 2026-11-16: 槽(路径) 和 变体(在跑什么) 分开显示。
+    //   v24/v24b/v24c 共用同一数据目录，靠环境变量区分 ⇒ 后端从日志自动识别出 data.variant。
+    const _v = d.variant || TV, _vn = d.variant_note || '';
+    _vl.innerHTML = `<b style="color:${_v!==TV?'#fbbf24':'#e2e8f0'}">${_v}</b>`
+      + (_vn?` <span style="color:#38bdf8">· ${_vn}</span>`:'')
+      + (d.variant_open_filter?'':'')
+      + ` · 手动刷新 (防SSH限流)` + ` <span style="color:#475569">(槽 ${TV})</span>`
+      + (_mm?`<span style="color:#f87171;font-weight:600">${_mm}</span>`:'');
   }
 
   // 本代黑白拆解（优化版主进程不再打印对局行 → 从工兵日志聚合）
@@ -433,7 +445,8 @@ function update(d){
     }
   }
 
-  // ── 🔥 空盘value 熔断器 ──
+  // ── 🔥 空盘value 熔断器（2026-11-16 卡片已从 HTML 移除：v24b 训练代码里没有熔断器，
+  //    这里只是 v38 时代的只读推测。sBox/sSub 取不到 → 下面两段 if 自然跳过，无副作用） ──
   const sp=d.spiral||{};
   const sBox=document.getElementById('spiralBox'), sSub=document.getElementById('spiralSub');
   if(sSub && sp.thr!=null){
@@ -542,8 +555,15 @@ function update(d){
     const stale=(w.iter!=null && d.current_it!=null && w.iter<d.current_it);
     div.className='wi '+(stale?'w-stale':cls(w.iter==null?null:w.game, quota));
     // 短标签: 有对局记录=「代内局数」, 否则回退后端状态文字 (衔接中/已就绪)
-    div.textContent=`w${w.id} ${w.iter!=null?(w.game+'/'+w.denom):w.status}`;
-    div.title=(w.iter!=null?`代${w.iter} 局${w.game}/${w.denom} · 黑${w.black} 白${w.white}`:'无对局记录')
+    // ★ 2026-11-16: 分母用【主进程口径】quota（= worker_games_per_worker），不用日志里的
+    //   w.denom —— 工兵脚本 Gomoku-worker_v24.py 里 GAMES_PER_ITER=10 是硬编码常量，
+    //   不受 GAMES_PER_WORKER 环境变量影响。19 工兵/每工兵5局 的 run 里，工兵日志仍写 /10，
+    //   而主进程只等 19×5=95 局 ⇒ 按 /10 显示会让人以为还要跑一倍。
+    div.textContent=`w${w.id} ${w.iter!=null?(w.game+'/'+(quota||w.denom)):w.status}`;
+    div.title=(w.iter!=null
+      ? `代${w.iter} 局${w.game}/${quota||w.denom}（主进程口径）· 黑${w.black} 白${w.white}`
+        + (w.denom && quota && w.denom!==quota ? `\n⚠ 工兵日志写 /${w.denom}：Gomoku-worker_v24.py 的 GAMES_PER_ITER 是硬编码，不跟 GAMES_PER_WORKER 走` : '')
+      : '无对局记录')
       +`（配额 ${quota} 局）`+(stale?` ⚠ 落后于当前代${d.current_it}`:'');
     g.appendChild(div);
   });

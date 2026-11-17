@@ -60,7 +60,7 @@ SLOT_META = {
     #   · 布局与 v36~v42 完全不同: 项目根 = /root/workspace/run_v24b,
     #     权重 = weights_it{N}_v24.pt, 工兵日志 = worker_v24_{i}.log, 主日志 = train_v24b.log
     'v24b': {'student_color': -1, 'student_name': '白', 'coach_name': '', 'coach_color': None,
-             'goal': 0.30, 'infer_log': '', 'workers': 9,
+             'goal': 0.30, 'infer_log': '', 'workers': 19,   # 2026-11-16 用户改 9→19 工兵
              'remote_root': '/root/workspace/run_v24b',
              'ckpt_basename': 'gomoku_checkpoints_v24',   # ⚠️ 脚本内 VERSION 仍是 "v24"
              'weight_suffix': 'v24',                      # 权重文件名后缀 weights_it{N}_v24.pt

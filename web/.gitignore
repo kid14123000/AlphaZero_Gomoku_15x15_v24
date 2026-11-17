@@ -7,3 +7,4 @@ __pycache__/
 sync_weights/
 weights_local/
 .bw_store_*.json
+probe_planes_out.json

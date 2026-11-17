@@ -239,9 +239,15 @@ const API = '';
 //   v39: 教练执白(冻结 v38 it57=58%巅峰) + 学生练黑 → 主指标 = 黑方(学生)胜率, 目标 80%
 //   v38: 教练执黑(冻结 it30) + 学生练白 → 主指标 = 白方(学生)胜率, 目标 55%
 //   普通自对弈线 (v36 及以前) 无教练 → 白胜率就是白胜率
-const VERS = [['v42', 'v42 (教练法+自动换边: 学生达标即换边冻结为新教练, 颜色动态; 阈值55%·连续2代)', {coach:'黑', student:'白', goal:55}],
+// ★ 2026-11-16: 本仓库主线是 v24 系（v24b / v24），老的 v36~v42 数据不在本机，仅留选项不占首位。
+//   v24b = v24 + 黑方空盘首手走「|value| 最小」的均衡手；纯自对弈无教练，30% 是白方失衡线下限。
+// ★ 2026-11-16: v24c = v24 + 开局过滤（双方随机下几手后评估 |V|，太大整局重抽）。
+//   注意 v24b/v24c/v24 共用同一个数据目录，数据源下拉里按【槽】区分，变体只在标题上标。
+const VERS = [['v24b', 'v24b / v24c (v24 系: 均衡首手 / 开局过滤; 纯自对弈无教练, 白胜率=指标, 30%=失衡线下限)', {coach:null, student:'白', goal:30}],
+              ['v24', 'v24 (原版基线: 黑方首手按搜索走; 纯自对弈无教练)', {coach:null, student:'白', goal:30}],
+              ['v42', 'v42 (教练法+自动换边: 学生达标即换边冻结为新教练, 颜色动态; 阈值55%·连续2代)', {coach:'黑', student:'白', goal:55}],
               ['v41', 'v41 = v40 + 梯度检查点(省显存); 单通道纯自对弈·无教练, 白胜率=指标; 30%=失衡线下限', {coach:null, student:'白', goal:30}],
-              ['v40', 'v40 (单通道版·按v1重建: 纯自对弈无教练, 白胜率=指标; 30%=失衡线下限)', {coach:null, student:'白', goal:30}],,
+              ['v40', 'v40 (单通道版·按v1重建: 纯自对弈无教练, 白胜率=指标; 30%=失衡线下限)', {coach:null, student:'白', goal:30}],
               ['v39', 'v39 (R6: 教练执白 v38 it117, 学生练黑, 黑胜率=主指标, 目标80%)', {coach:'白', student:'黑', goal:80}],
               ['v38r4', 'v38·R5 (教练=v39 it96 教白棋, 白方收官 55.0%)', {coach:'黑', student:'白', goal:55}],
               ['v38', 'v38 (R5 槽目录: 教练执黑, 学生练白, 白胜率=主指标, 目标55%)', {coach:'黑', student:'白', goal:55}],
@@ -258,10 +264,15 @@ const VERS = [['v42', 'v42 (教练法+自动换边: 学生达标即换边冻结�
   if (!S.slot) return;
   const i = VERS.findIndex(x => x[0] === S.slot);
   if (i > 0) VERS.unshift(VERS.splice(i, 1)[0]);
-  const st = S.student_name || '?', co = S.coach_name || '?';
+  const st = S.student_name || '?', co = S.coach_name || '';
   const g = Math.round((S.goal || 0) * 100);
-  VERS[0][1] = `${S.slot} (主线 · 第${S.round || '?'}轮: 教练执${co} 教${st}棋, ${st}胜率=主指标, 目标${g}%)`;
-  VERS[0][2] = { coach: co, student: st, goal: g };
+  // ★ 2026-11-16: 无教练槽（v24b/v40/v41）coach_name 是空串 → 老文案会变成「教练执 教白棋」
+  const vt = S.variant && S.variant !== S.slot ? `${S.slot}/${S.variant}` : S.slot;
+  const vn = S.variant_note ? ` · ${S.variant_note}` : '';
+  VERS[0][1] = co
+    ? `${vt} (主线 · 第${S.round || '?'}轮: 教练执${co} 教${st}棋, ${st}胜率=主指标, 目标${g}%)`
+    : `${vt} (主线 · 纯自对弈无教练, ${st}胜率=主指标, ${g}%=失衡线下限${vn})`;
+  VERS[0][2] = { coach: co || null, student: st, goal: g };
 })();
 const MAIN_VER = VERS[0][0];
 // 当前所选版本的口径 (= null 表示普通自对弈线)
@@ -1000,18 +1011,24 @@ async function loadWhiteRate() {
     // 标题/说明行按版本口径改写
     const _hdr = document.querySelector('#wrSec .sec-title');
     const _hint = document.getElementById('wrHint');
-    if (_hdr) _hdr.textContent = META
-      ? `⓪ 胜率趋势 (自对弈各代, 黑先固定) — 教练执${META.coach} / 学生${META.student}`
-      : '⓪ 白胜率趋势 (自对弈各代, 黑先固定)';
+    // ★ 2026-11-16: 无教练槽 META.coach 是 null → 「教练执null」的烂文案；单独分支处理
+    const _noCoach = META && !META.coach;
+    if (_hdr) _hdr.textContent = !META
+      ? '⓪ 白胜率趋势 (自对弈各代, 黑先固定)'
+      : (_noCoach ? `⓪ 白胜率趋势 (自对弈各代) — 纯自对弈无教练 · 学生${META.student}`
+                  : `⓪ 胜率趋势 (自对弈各代, 黑先固定) — 教练执${META.coach} / 学生${META.student}`);
     if (_hint) _hint.innerHTML = !META
       ? '白胜率 = 白胜局 / 总对局 · 健康基线 ~45-50% (先手优势下) · 崩盘信号: 白胜率持续 <20% + 中位手数缩短'
-      : (stuIsWhite
+      : (_noCoach
+         ? `本版: <b style="color:#4ade80">纯自对弈, 无教练</b> · 白胜率 = 白胜局/总对局`
+           + `(目标 ${META.goal}%, 低于它是失衡信号) · 紫虚线 = 中位手数(防守落地=手数上升)`
+         : (stuIsWhite
          ? `本版: 教练执<b style="color:#4ade80">${META.coach}</b> / 学生练<b style="color:#4ade80">${META.student}</b> · `
            + `白胜率那条<b>就是学生(${META.student})的胜率</b> = 主指标(目标 <b>${META.goal}%</b>) · `
            + `<span style="color:#64748b">教练(执${META.coach})的成绩不在图上</span>`
          : `本版: 教练执<b style="color:#4ade80">${META.coach}</b> / 学生练<b style="color:#4ade80">${META.student}</b> · `
            + `主指标 = <b style="color:#e2e8f0">${stuLabel}</b>(目标 ${META.goal}%) · `
-           + `<span style="color:#64748b">白胜率那条是【教练】的成绩, 与学生进步反向; 绿虚线才是学生</span>`);
+           + `<span style="color:#64748b">白胜率那条是【教练】的成绩, 与学生进步反向; 绿虚线才是学生</span>`));
     // {x:it,y:rate} 点对 + linear x轴 — v24 全 52 点不被主线 labels 截断 (2026-09-05)
     const xy = (itsArr, ratesArr) => ratesArr.map((v, i) => ({ x: itsArr[i], y: v }));
     const ctx = document.getElementById('whiteRateChart').getContext('2d');

@@ -1677,9 +1677,12 @@ def api_network_viz():
         # 🐛 修复 (2026-08-23): 原 make_input(canonical) 没传 player → v18 ch2 恒 1(黑视角)
         # 白视角局面(ch0=白) + ch2=1(黑) = 输入矛盾 → value 输出错乱(如白视角局面查成+0.091)
         if hasattr(mod, 'make_input'):
+            # ★ plane3 = 上一手 (2026-11-17 修): stones 是有序落子序列 → 末项即上一手。
+            #   不传时 plane3 恒 0，与训练输入分布不符（实测同一局面 value 差 0.148 / policy 差 8.5pp）
+            _lm_viz = _lm_of(stones_param) if stones_param else (_lm_of(G.get('moves')) or None)
             try:
-                x = torch.tensor(mod.make_input(canonical, player=player)).unsqueeze(0)
-            except TypeError:  # v12/v14 等旧版 make_input 无 player 参数
+                x = torch.tensor(mod.make_input(canonical, last_move=_lm_viz, player=player)).unsqueeze(0)
+            except TypeError:  # v12/v14 等旧版 make_input 无这些参数
                 x = torch.tensor(mod.make_input(canonical)).unsqueeze(0)
         else:
             x = torch.tensor(canonical).unsqueeze(0).unsqueeze(0)
@@ -2978,6 +2981,10 @@ def api_slot_js():
         'coach_name': cfg.get('coach_name'),
         'coach_note': cfg.get('coach_note'),
         'running_process_slot': TRAIN_VERSION,
+        # ★ 2026-11-16: 变体（v24c 开局过滤等）靠环境变量切换、共用同一目录，
+        #   从最近一次抓取的缓存带出，让回放页标题能显示「v24b/v24c · 开局过滤 ON」
+        'variant': TRAIN_CACHE.get('variant') or cfg.get('slot') or TRAIN_VERSION,
+        'variant_note': TRAIN_CACHE.get('variant_note') or '',
     }
     js = 'window.ACTIVE_SLOT = ' + _json.dumps(payload, ensure_ascii=False) + ';'
     return app.response_class(js, mimetype='application/javascript')
@@ -3349,7 +3356,7 @@ def ssh_cmd(cmd, host=None, port=None, user=None, pwd=None):
     pwd = pwd or SSH_PASS
     safe_cmd = cmd.replace('"', '\\"')
     script = (
-        'set timeout 25\n'
+        'set timeout 60\n'
         'spawn ssh -o StrictHostKeyChecking=no -p ' + str(port) + ' '
         + user + '@' + host + ' "' + safe_cmd + '"\n'
         'expect "password:"\n'
@@ -3357,7 +3364,7 @@ def ssh_cmd(cmd, host=None, port=None, user=None, pwd=None):
         'expect eof\n'
     )
     try:
-        r = subprocess.run(['expect', '-c', script], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(['expect', '-c', script], capture_output=True, text=True, timeout=70)
         out = r.stdout
         idx = out.find('password:')
         if idx >= 0:
@@ -3443,12 +3450,18 @@ def fetch_training_data():
         "echo '---SHARDS'; ls -l --time-style=+%s '" + GATE_LOG_DIR + "/*_shard*.jsonl' 2>/dev/null "
         "| sort -k6 -n | tail -5",
     ]
-    for i in range(WORKER_NUM):
-        # ★ 2026-11-15: tail -600 —— 工兵日志很小，全量拿回来才能按代聚合黑白胜
-        #   (旧 tail -6 只覆盖最近 2-3 局，白胜率趋势无从谈起)
-        # 用于解析 代/局 进度 与 本代黑白胜负（优化版主进程不再打印对局行）
-        parts.append("echo '===W" + str(i) + "==='; tail -600 '" + WORKER_LOGS[i] + "' 2>/dev/null")
+    # ★ 2026-11-16: 工兵日志不再塞进上面那条大命令 —— 19 个工兵 × tail -600 约 150KB，
+    #   在 ~20KB/s 的链路上会把 expect 的 25s 超时打满 → 输出被截断在后半段，
+    #   后半批工兵在页面上显示成「—」。更糟的是【部分成功】也能通过 got_valid 检查
+    #   （主日志段完整就算有效），于是半成品被当成缓存，页面数字会比真实值少一半。
+    #   改为：主命令只拉文件级信息，工兵日志分 2 批独立 ssh（每批 10 个）。
     raw = ssh_cmd('; '.join(parts))
+    _wraw = []
+    for _b in range(0, WORKER_NUM, 10):
+        _wp = ["echo '===W" + str(i) + "==='; tail -600 '" + WORKER_LOGS[i] + "' 2>/dev/null"
+               for i in range(_b, min(_b + 10, WORKER_NUM))]
+        _wraw.append(ssh_cmd('; '.join(_wp)))
+    raw = raw + '\n' + '\n'.join(_wraw)
 
     # 按 ===TAG=== 切段：re.search 容忍粘连行，标记前后残留（如 } 或 {）分别归还给前/后段
     segs = {}
@@ -3470,6 +3483,33 @@ def fetch_training_data():
     log_lines = [l for l in segs.get('LOG', []) if l.strip()]
     data['log'] = log_lines
 
+    # ★ 2026-11-16: 日志是【跨轮追加】的（run_single.sh 已从 > 改成 >>，否则重启抹掉历史）。
+    #   代价是旧 run 的尾部状态行（"等待工兵: 89/90"、"代3 局1/10"）会污染新 run 的解析
+    #   —— 实测：新 run 已跑 25 分钟，页面却显示旧 run 的「代3 局89/90」和分母 90。
+    #   修法：定位【最后一次启动】(run_quick.py 每次启动打一条 `config: {...}`)，
+    #   所有「当前状态」类解析只用它之后的行；loss/checkpoint 这类累积量仍用全量。
+    _last_start = 0
+    for _i, _l in enumerate(log_lines):
+        if _l.startswith('config:'):
+            _last_start = _i
+    cur_lines = log_lines[_last_start:] if _last_start else log_lines
+    data['log_since'] = log_lines[_last_start].strip()[:80] if _last_start else None
+    data['log_total'] = len(log_lines)
+    data['log_current'] = len(cur_lines)
+    # 本次启动的墙钟时刻（取 config 行前面那条带时间戳的日志行，如「使用设备: cuda」）
+    #   用途：本代时间锚点不能早于进程启动，否则重启后「已持续」会算成上一轮的长度
+    run_start_ts = None
+    if _last_start:
+        for _k in range(_last_start - 1, max(-1, _last_start - 5), -1):
+            _m = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', log_lines[_k])
+            if _m:
+                from datetime import datetime as _d2
+                run_start_ts = _d2.strptime(_m.group(1), '%Y-%m-%d %H:%M:%S').timestamp()
+                data['run_start_time'] = _m.group(1)
+                break
+    data['run_start_ts'] = run_start_ts
+
+
     # ── metadata 提前解析（当前代 + 运行配置都要用） ──
     meta_json, meta_cfg = {}, {}
     try:
@@ -3477,11 +3517,47 @@ def fetch_training_data():
         meta_cfg = meta_json.get('config', {}) or {}
     except Exception as e:
         print(f'[meta] {e}')
-    # 🚨 2026-11-15: metadata.config 可能为空（bootstrap 写的 random-init 档），
-    #   此时回落到 slot_config 的工兵数 / 10局，而不是瞎猜 20/5（v24b 实为 9/10/10）
-    data['worker_count'] = meta_cfg.get('worker_count') or WORKER_NUM
-    data['worker_games_per_worker'] = meta_cfg.get('worker_games_per_worker') or 10
-    data['main_episodes_per_iter'] = meta_cfg.get('train_episodes_per_iteration') or 10
+
+    # ★ 2026-11-16: 运行配置的【权威来源】= 主日志最后一条 `config:` 行 + 主进程 environ。
+    #   为什么不信 metadata.config：它由 save_checkpoint 写，只在【一代跑完】时更新
+    #   ⇒ 改了工兵数/每工兵局数重启后，metadata 里仍是上一代的旧值（实测：19 工兵的 run
+    #   已跑了 20 分钟，metadata 还写着 9/10/10）→ 页面分母、工兵格子数全错。
+    #   run_quick.py 启动时会把真实 config 打到日志，这是最可靠的实时口径。
+    run_cfg = {}
+    for _line in reversed(cur_lines):
+        if _line.startswith('config:'):
+            _m = re.search(r"'worker_count':\s*(\d+)", _line)
+            _mg = re.search(r"'worker_games_per_worker':\s*(\d+)", _line)
+            _ms = re.search(r"'sim_count':\s*(\d+)", _line)
+            _mi = re.search(r"'train_iterations':\s*(\d+)", _line)
+            if _m:
+                run_cfg['worker_count'] = int(_m.group(1))
+            if _mg:
+                run_cfg['worker_games_per_worker'] = int(_mg.group(1))
+            if _ms:
+                run_cfg['sim_count'] = int(_ms.group(1))
+            if _mi:
+                run_cfg['train_iterations'] = int(_mi.group(1))
+            break
+    # 主进程每代局数：run_quick.py 的 config: 行不打印它，但每条对局行写着「代N 局M/D」
+    #   D 就是 EPISODES（实测 9工兵时代=10、19工兵时代=5，两者都对得上）
+    for _line in reversed(cur_lines):
+        _m = re.search(r'代(\d+)\s+局(\d+)/(\d+)', _line)
+        if _m:
+            run_cfg['train_episodes_per_iteration'] = int(_m.group(3))
+            break
+    data['run_cfg'] = run_cfg
+
+    # 优先级：运行配置(实时) > metadata.config(上一代) > slot_config
+    # 🚨 metadata.config 可能为空（bootstrap 写的 random-init 档），
+    #   此时回落到 slot_config 的工兵数，而不是瞎猜 20/5
+    data['worker_count'] = (run_cfg.get('worker_count')
+                            or meta_cfg.get('worker_count') or WORKER_NUM)
+    data['worker_games_per_worker'] = (run_cfg.get('worker_games_per_worker')
+                                       or meta_cfg.get('worker_games_per_worker') or 5)
+    data['main_episodes_per_iter'] = (run_cfg.get('train_episodes_per_iteration')
+                                      or meta_cfg.get('train_episodes_per_iteration') or 5)
+
 
     # ── 每代耗时（攒批推理提速效果的直接证据） ──
     # 优先用权重文件 mtime (跨进程重启仍连续)，日志时间戳作为补充/兜底
@@ -3529,14 +3605,14 @@ def fetch_training_data():
     # 🚨 2026-09-13 攒批推理优化版：主进程不再自对弈（train_episodes_per_iteration=0），
     #   主日志改用「等待工兵: N/100局已到」报进度，旧版的「代N 局M/10」行没有了
     cur_game = cur_denom = None
-    for line in reversed(log_lines):
+    for line in reversed(cur_lines):
         m = re.search(r'等待工兵:\s*(\d+)/(\d+)局已到', line)
         if m:
             cur_game, cur_denom = int(m.group(1)), int(m.group(2))
             break
     if cur_denom is None:
         # 兼容旧版（本地推理时代，主进程自己产局）
-        for line in reversed(log_lines):
+        for line in reversed(cur_lines):
             m = re.search(r'代(\d+) 局(\d+)/(\d+)', line)
             if m:
                 cur_game, cur_denom = int(m.group(2)), int(m.group(3))
@@ -3634,6 +3710,14 @@ def fetch_training_data():
         data['gen_now'] = gen_now
         if gen_now is not None:
             data['gen_first_time'] = _dt.fromtimestamp(gen_first).strftime('%Y-%m-%d %H:%M:%S')
+        # ★ 2026-11-16: 锚点不得早于【本次进程启动】—— 日志/目录跨轮追加后，
+        #   上一轮留下的同代局文件会让 gen_first 落在上一轮，导致"已持续"多算一整轮
+        _floor = data.get('run_start_ts')
+        if _floor:
+            if gen_first and gen_first < _floor:
+                gen_first = _floor
+            if meta_ts and meta_ts < _floor:
+                meta_ts = _floor
         if gen_first and meta_ts:
             # 两者取较早者: 正常 = metadata 早约一局耗时; 若 metadata 被中途重写过则局文件更早
             ts_start_epoch, anchor = (min(gen_first, meta_ts),
@@ -3665,6 +3749,33 @@ def fetch_training_data():
         import traceback as _tb
         print(f'[train-time] {e}')
         print(_tb.format_exc())
+
+    # ── 运行变体探测（2026-11-16）────────────────────────────────────────────
+    # 槽(用于路径) 和 变体(用于显示) 是两件事：
+    #   v24 / v24b / v24c 共用同一个数据目录 gomoku_checkpoints_v24 和同一个权重后缀 _v24，
+    #   因为训练脚本里 VERSION 常量一直是 "v24"，开关全靠环境变量。
+    #   ⇒ 切变体【不需要】改槽（改了反而找不到目录），但页面上写死 "v24b" 会误导。
+    # 这里从【主日志】推导实际在跑哪个变体：v24c 每局都会打「开局过滤: 第N次尝试通过 ...」。
+    #   只在当前 run 的行里找（日志跨轮追加，旧 run 的开局过滤行不能算到新 run 头上）。
+    variant, vnote = (ACTIVE_SLOT.get('variant') or TRAIN_VERSION), ''
+    _mine = cur_lines if cur_lines else log_lines
+    _of = [l for l in _mine if '开局过滤' in l]
+    if _of:
+        variant = ACTIVE_SLOT.get('variant_if_open_filter') or 'v24c'
+        _m = re.search(r'阈值\s*([\d.]+)', _of[-1])
+        _th = _m.group(1) if _m else '?'
+        _fail = sum(1 for l in _mine if '全未通过' in l)
+        vnote = f'开局过滤 ON · |V|阈值 {_th}'
+        if _fail:
+            vnote += f' · {_fail} 局重抽失败退回0手'
+    elif any('均衡首手' in l for l in _mine):
+        variant = ACTIVE_SLOT.get('variant_if_balanced') or 'v24b'
+        vnote = '均衡首手 ON'
+    data['variant'] = variant
+    data['variant_note'] = vnote
+    data['variant_open_filter'] = bool(_of)
+    data['slot_config'] = TRAIN_VERSION
+    data['slot_mismatch'] = bool(_slot_running and _slot_running != TRAIN_VERSION)
 
     # ── 主进程阶段 ──
     last = log_lines[-1] if log_lines else ''
@@ -3705,7 +3816,7 @@ def fetch_training_data():
         data['main_phase'] = 'idle'
 
     # 本代实际收齐局数（收集工兵行；≥ 目标局数 = 有工兵多产了零头）
-    for line in reversed(log_lines):
+    for line in reversed(cur_lines):
         m = re.search(r'收集工兵:\s*(\d+)局', line)
         if m:
             data['collected_games'] = int(m.group(1))
@@ -3713,7 +3824,7 @@ def fetch_training_data():
 
     # sim: 优先日志 sim=(实时), 其次 metadata config.sim_count, 兜底 800 (v8 起固定 800)
     sim = None
-    for line in reversed(log_lines):
+    for line in reversed(cur_lines):
         m = re.search(r'sim=(\d+)', line)
         if m:
             sim = int(m.group(1)); break
@@ -3852,7 +3963,7 @@ def fetch_training_data():
         _total_target = (data['worker_count'] * data['worker_games_per_worker']
                          + (data.get('main_episodes_per_iter') or 0))
         _main_done = 0
-        for line in reversed(log_lines):
+        for line in reversed(cur_lines):
             m = re.search(r'代%d\s+局(\d+)/(\d+)' % cur_it, line)
             if m:
                 _main_done = int(m.group(1))
@@ -4631,6 +4742,16 @@ def fetch_training_data():
     # 现在: 仅在拿到有效数据时替换缓存; 失败则保留上次成功数据 + 标记 ssh_ok=False 供前端提示
     got_valid = bool(data.get('current_it') is not None or data.get('log')
                      or (data.get('loss') or {}).get('iterations'))
+    # ★ 2026-11-16: 再补一道「工兵段完整度」检查 —— SSH 输出被截断时，主日志段可能完整
+    #   而工兵段缺一半，这种半成品会被当成有效数据缓存，页面上就出现
+    #   「进度 49 → 22 倒退」「w5~w18 全是 —」这类假数字。
+    _w_total = data.get('worker_count') or WORKER_NUM or 1
+    _w_got = sum(1 for w in (data.get('workers') or []) if w.get('iter') is not None)
+    data['workers_seen'] = _w_got
+    if got_valid and _w_got == 0 and not data.get('current_game'):
+        # 一个工兵都没解析出来、也没有本代局进度 ⇒ 基本可判定为拉取不完整
+        got_valid = False
+        print(f'[train] 工兵段不完整({_w_got}/{_w_total}), 视为无效拉取, 保留上次缓存')
     with TRAIN_LOCK:
         if got_valid:
             TRAIN_CACHE.clear()

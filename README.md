@@ -57,6 +57,10 @@ ch3  上一步落子位置
 | 候选限定中心 5×5 | 不限的话冷网络会在边角点上「恰好估值≈0」，那是估值错误不是真均衡 |
 | 在 \|value\| 最小的前 3 手里随机 | 纯 argmin 会让每局首手完全一样（实测确认过） |
 
+后续在 v24b 基础上又做了一版 **v24c**：开局不用「均衡首手」，改成从预生成的
+开局池里过滤采样（思路来自 AlphaGomoku 的 OpeningGenerator）。本仓主干按 v24c 在跑，
+`run_v24b.sh` 仍可复现 v24b 的均衡首手行为。
+
 实测（权重 `weights_it73_v24.pt`，CPU）：
 
 ```
@@ -99,16 +103,28 @@ V24_CKPT=./gomoku_checkpoints_v24/weights_it73_v24.pt python validate_v24b.py
 ## 文件
 
 ```
-Gomoku-v0_pt_v24.py       v24 原版（未改动，788 行单文件：网络 + MCTS + 训练循环）
+Gomoku-v0_pt_v24.py       v24 原版（未改动，1327 行单文件：网络 + MCTS + 训练循环）
 Gomoku-v0_pt_v24b.py      v24b = v24 + 均衡首手
 Gomoku-worker_v24.py      v24 工兵
 Gomoku-worker_v24b.py     v24b 工兵（只改了 import 的模块名）
 run_quick.py              训练驱动
 run_v24b.sh               启动脚本
 validate_v24b.py          首手行为验证
+scripts/                  训练机运维小工具（见下）
 requirements.txt
+LICENSE                   MIT（含上游 Junxiao Song 署名）
 web/                      训练监控看板
 ```
+
+`scripts/` 里这几个都是「训练机在远端时」才用得上的：
+
+| 脚本 | 干什么 |
+|---|---|
+| `sync_weights.py` | 把训练机上缺的权重逐个拉回本地，`.part` 校验后才转正（那条链路下行被限速到 12~25KB/s，10MB 一个要 7~14 分钟） |
+| `sync_replay.py` | 一条命令拉回自对弈 pkl 并重建索引 |
+| `build_replay_index.py` | 只重建回放索引（被 `sync_replay.py` 调用） |
+
+凭证一律走 gitignored 的 `web/creds.local.json`，脚本里不落明文。
 
 ---
 
