@@ -84,6 +84,10 @@ VERSIONS = [
     #   要恢复某个历史版本：把它的 Gomoku-v0_pt_vNN.py 放进本目录或 ../legacy/versions/ 后加回这里。
     ('v24', 'gomoku_checkpoints_v24', 'Gomoku-v0_pt_v24.py',  'v24'),
     ('v24b', 'gomoku_checkpoints_v24', 'Gomoku-v0_pt_v24b.py', 'v24b'),
+    # ★ 2026-11-22: v24d 用的是**同一个目录/同一个权重后缀**（脚本内 VERSION 恒为 "v24"），
+    #   ✅ 但代码文件是 Gomoku-v0_pt_v24b.py 的最新版（内含 v24d 的 BAL3 逻辑，md5 与服务器一致）。
+    #   放在 v24 之后：scan_weights 按 path 去重，权重标签仍是 [v24]，与文件名相符。
+    ('v24d', 'gomoku_checkpoints_v24', 'Gomoku-v0_pt_v24b.py', 'v24d'),
 ]
 
 _mod_cache = {}
@@ -307,6 +311,40 @@ def _agent_predict(agent, board_batch, players=None, last_moves=None):
     return agent.predict(board_batch, **kw)
 
 
+def _pick_from_counts(agent, state_bytes, cnt, board_shape=(15, 15)):
+    """按 MCTS 访问数选点；**访问数打平时用根先验打破平局**
+
+    🚨 2026-11-21 实测的测评页 bug：sim 小于根节点合法点数时（前端默认 sim=100，
+       开局空点 200+），MCTS 把每个候选各访问 1 次就结束 → cnt 全是 1 →
+       np.argmax 取数组第 0 个 = **(0,0) 角落**。我方执白时连走 (0,0)(0,1)(0,2) 即此故 ✗
+       低 sim 下"计数平局"不代表各点等价 —— 网络先验才是有效信号，用它破平。
+    返回 (r, c)；全部为 0 时返回 None。
+    """
+    try:
+        c = np.asarray(cnt, dtype=np.float64)
+        if c.ndim != 2:
+            c = c.reshape(board_shape)
+        flat = c.ravel()
+        if flat.max() <= 0:
+            return None
+        tie = np.flatnonzero(flat == flat.max())
+        idx = int(tie[0])
+        if len(tie) > 1:
+            pri = None
+            try:
+                pri = agent.policy.get(state_bytes) if hasattr(agent, 'policy') else None
+            except Exception:
+                pri = None
+            if pri is not None:
+                p = np.asarray(pri, dtype=np.float64).ravel()
+                if p.size == flat.size:
+                    idx = int(tie[int(np.argmax(p[tie]))])
+        return divmod(idx, board_shape[1])
+    except Exception as _e:
+        print('[pick_from_counts] %s' % _e)
+        return None
+
+
 def _lm_of(stones):
     """从落子序列(有序)取"最后一手" → (r,c); 空则 None
 
@@ -421,9 +459,12 @@ def _trace_initial_moves(weight_file, board, player, n_trace=30, snap_every=5, b
             valid = t_agent.valid.get(s)
             if count is not None and valid is not None:
                 cntv = count * valid
-                # 本轮根选点: 访问数最大的点（本轮它+1）
-                idx = int(np.argmax(cntv.ravel()))
-                r, c = divmod(idx, bs)
+                # 本轮根选点: 访问数最大的点（平局用先验破平，见 _pick_from_counts）
+                _pk = _pick_from_counts(t_agent, s, cntv, board.shape)
+                if _pk is None:
+                    continue
+                r, c = _pk
+                idx = r * bs + c
                 root_moves.append({'r': int(r), 'c': int(c)})
                 # 快照
                 if (i + 1) % snap_every == 0 or i == n_trace - 1:
@@ -609,8 +650,9 @@ def collect_decision_info(agent, board, player, move_r, move_c, greedy=True, las
                 info['mcts_top'].append({'r': int(r), 'c': int(c),
                                          'visits': int(count.ravel()[idx]),
                                          'q': round(float(q.ravel()[idx]), 3)})
-        # 最优候选 = 访问最多的点（贪心会下的）
-        best_idx = int(np.argmax(cntv.ravel()))
+        # 最优候选 = 访问最多的点（贪心会下的）；平局用先验破平
+        _bp = _pick_from_counts(agent, s, cntv, board.shape)
+        best_idx = (_bp[0] * bs + _bp[1]) if _bp else int(np.argmax(cntv.ravel()))
         br, bc = divmod(best_idx, bs)
         info['best'] = {'r': int(br), 'c': int(bc),
                         'visits': int(count.ravel()[best_idx]),
@@ -939,16 +981,47 @@ def index():
     return resp
 
 
+def _active_weight_version():
+    """活跃槽对应的**权重版本名**（可能 ≠ 槽名）
+
+    🚨 槽名 ≠ 权重文件的版本名：v24 / v24b / v24c 共用同一个
+      gomoku_checkpoints_v24 目录和 weights_it{N}_v24.pt 后缀（训练脚本 VERSION 恒为 v24，
+      变体只是环境变量）。scan_weights() 按路径去重后会把这类权重一律标成 'v24'，
+      所以"按版本筛权重"的页面必须用这个函数的结果做默认值 ——
+      否则活跃槽是 v24b 时下拉选不到任何权重（实测：测评页/出题页落到 v42，列表全空）。
+    """
+    try:
+        from slot_config import active_cfg  # noqa: F401
+        cfg = active_cfg()
+        suf = cfg.get('weight_suffix')
+        ck = cfg.get('ckpt_basename')
+        if suf:
+            for v, _d, _s, _p in VERSIONS:
+                if v == suf:
+                    return v
+        if ck:
+            for v, dirname, _s, _p in VERSIONS:
+                if dirname == ck:
+                    return v
+    except Exception as e:
+        print('[active_weight_version] %s' % e)
+    return TRAIN_VERSION
+
+
 @app.route('/api/weights')
 @require_auth
 def api_weights():
     meta = load_metadata()
     default_sim = meta.get('config', {}).get('sim_count', 50)
+    ws = scan_weights()
     return jsonify({
-        'weights': scan_weights(),
+        'weights': ws,
         'default_sim': default_sim,
         # ★ 当前活跃槽 (2026-09-27): 各页面用它决定默认版本, 换槽不用再改页面 ✗
         'active': TRAIN_VERSION,
+        # ★ 2026-11-21: 真正能用来筛权重的版本名（槽名 v24b → 权重版本 v24）
+        'active_weight_version': _active_weight_version(),
+        'versions': sorted({w['version'] for w in ws}),
         'active_compare': COMPARE_VERSION,
         'active_goal': COACH_GOAL_RATE,
     })
@@ -2299,8 +2372,9 @@ def api_mcts_viz():
                     'visits': int(cntv.ravel()[j]),
                     'pct': round(float(prob.ravel()[j]) * 100, 1),
                     'q': round(float(t_agent.q.get(s).ravel()[j]), 3)} for j in order]
-            # 最终决策 = argmax
-            best_idx = int(np.argmax(cntv.ravel()))
+            # 最终决策 = argmax（平局用先验破平，见 _pick_from_counts）
+            _bp = _pick_from_counts(t_agent, s, cntv, (15, 15))
+            best_idx = (_bp[0] * 15 + _bp[1]) if _bp else int(np.argmax(cntv.ravel()))
             best = {'r': best_idx // 15, 'c': best_idx % 15,
                     'visits': int(cntv.ravel()[best_idx])}
         else:
@@ -2519,23 +2593,56 @@ def game9_page():
 import re as _re
 import threading as _threading   # 模块顶层需要 (EVAL_LOCK 初始化在 import threading 之前)
 
-RAPFI_BIN = os.path.expanduser('~/rapfi/run/pbrain-rapfi')
-RAPFI_CONFIG = os.path.expanduser('~/rapfi/run/config.toml')
+def _find_rapfi_dir():
+    """定位 Rapfi 安装目录（必须同时有 pbrain-rapfi 和 config.toml）
+
+    🚨 2026-11-21: 原代码把路径写死 ~/rapfi/run —— 那台机器上根本没有这个目录，
+       Rapfi 实际装在 ~/rapfi_run（含 config.toml / config_d1..d12.toml / *.bin），
+       于是 /api/eval/start 一律报 [Errno 2] config.toml 不存在，测评页完全起不来。
+    候选顺序: 环境变量 GOMOKU_RAPFI_DIR → 几个常见安装位置
+    """
+    cands = []
+    env = os.environ.get('GOMOKU_RAPFI_DIR')
+    if env:
+        cands.append(os.path.expanduser(env))
+    cands += [os.path.expanduser('~/rapfi_run'),
+              os.path.expanduser('~/rapfi/run'),
+              os.path.expanduser('~/rapfi'),
+              os.path.join(os.path.dirname(SCRIPT_DIR), 'rapfi_run')]
+    for d in cands:
+        if (os.path.isfile(os.path.join(d, 'pbrain-rapfi'))
+                and os.path.isfile(os.path.join(d, 'config.toml'))):
+            return d
+    return cands[0]        # 都不存在 → 返回首选路径, 让报错信息指得准
+
+
+RAPFI_DIR = _find_rapfi_dir()
+RAPFI_BIN = os.path.join(RAPFI_DIR, 'pbrain-rapfi')
+RAPFI_CONFIG = os.path.join(RAPFI_DIR, 'config.toml')
+RAPFI_TIMEOUT_TURN = int(os.environ.get('GOMOKU_RAPFI_TIMEOUT_TURN', '2000'))  # ms/手
 EVAL_LOCK = _threading.Lock()   # 防并发 step (前端轮询+sim大时请求会堆积)
 EVAL_STATE = {'active': False, 'board': None, 'current': 1, 'stones': [],
               'agent': None, 'engine': None, 'we_black': True, 'history': [],
               'winner': None, 'moves': 0, 'config': {}, 'wr_history': []}
 
 def _set_rapfi_depth(depth, message_mode='none'):
-    """设置 Rapfi 难度 + 输出模式（段感知改写，命中数断言）
+    """按难度生成 config_d{N}.toml 并返回文件名（**不改 config.toml**）
 
-    🚨 2026-09-26 用户报"测评页老是无响应"的根因（实测 dump 原始 stdout 确认）:
-      本地 config 的 message_mode 被留成 "brief" → mac 持久模式下引擎**不按步回坐标**:
-        第1手 20s 内无任何坐标输出; 第2手起坐标**滞后一手**(拿到的是上一手的答案, 连续两手同一坐标)
-      → web eval 每步干等 _read_line 30s 超时 / 拿到过期着法 → 页面卡死 ✗
-      message_mode="none": 坐标 1.77s 立即返回 ✓
-    → 每次开测强制写回 none, 避免被历史污染的 config 再坑
+    ⚠️ 历史: 旧实现在每局开始都原地改写 config.toml 的 max_search_depth/message_mode
+      (因为 message_mode 被留成 "brief" 时引擎坐标会滞后一手 → 测评页卡死)。
+      那样做会把用户手调的配置覆盖掉，而且直接 open(...,'w') 一旦写坏就把文件清成
+      0 字节 → 引擎退回默认参数、乱报 +M3（本机实踩过一次）。
+    🚨 2026-11-21 重写：以 config.toml 为模板生成独立文件 config_d{N}.toml，
+      **先写 .tmp 再 os.replace 原子替换**，config.toml 一个字节都不动。
+    返回可直接传给 `pbrain-rapfi --config=` 的文件名。
     """
+    dst = os.path.join(RAPFI_DIR, 'config_d%d.toml' % int(depth))
+    if os.path.isfile(dst):
+        return os.path.basename(dst)          # 已有（用户自己留的 d1..d12）直接用
+    if not os.path.isfile(RAPFI_CONFIG):
+        raise RuntimeError(
+            'Rapfi 未安装或路径不对：找不到 %s\n'
+            '把 Rapfi 目录路径写进环境变量 GOMOKU_RAPFI_DIR，或放到 ~/rapfi_run/' % RAPFI_CONFIG)
     with open(RAPFI_CONFIG) as f:
         lines = f.read().split('\n')
     cur, out = None, []
@@ -2545,7 +2652,7 @@ def _set_rapfi_depth(depth, message_mode='none'):
         if st.startswith('[') and st.endswith(']'):
             cur = st[1:-1]
         elif cur == 'search' and _re.match(r'\s*max_search_depth\s*=', line):
-            out.append('max_search_depth = {}'.format(depth))
+            out.append('max_search_depth = {}'.format(int(depth)))
             hits['max_search_depth'] += 1
             continue
         elif cur == 'general' and _re.match(r'\s*message_mode\s*=', line):
@@ -2554,20 +2661,45 @@ def _set_rapfi_depth(depth, message_mode='none'):
             continue
         out.append(line)
     if hits['max_search_depth'] != 1 or hits['message_mode'] != 1:
-        raise RuntimeError('rapfi config 改写异常: %s (各应命中 1 次)' % hits)
-    with open(RAPFI_CONFIG, 'w') as f:
+        raise RuntimeError('rapfi config 生成异常: %s (各应命中 1 次)' % hits)
+    tmp = dst + '.tmp'
+    with open(tmp, 'w') as f:
         f.write('\n'.join(out))
+    os.replace(tmp, dst)                      # 原子替换, 不会留下半个文件
+    return os.path.basename(dst)
 
 class _RapfiEngine:
-    def __init__(self):
+    """Rapfi 引擎进程（pbrain 协议）
+
+    🚨 2026-11-21 对齐 ~/pk_ladder/rapfi_player.py（本项目实测跑通的那份）：
+      · 用 `--config=config_d{N}.toml` 传难度，**不原地改写 config.toml**
+      · START 后面补 INFO rule / timeout_turn / timeout_match —— 缺了这些引擎
+        走自己的默认时间预算，depth 设多少都是 2ms 出招
+      · Apple Silicon 上二进制是 x86_64，用 `arch -x86_64` 显式走 Rosetta
+      · who 用**相对引擎**语义（自己=1 / 对手=2），与 pk_ladder 一致
+    """
+    def __init__(self, depth=5, my_color=1):
+        self.depth = int(depth)
+        self.my_color = int(my_color)
+        self.cfg_name = None
         self.p = None
         self.start_new()
+
+    def set_color(self, color):
+        self.my_color = int(color)
+
     def start_new(self):
         if self.p:
             try: self.p.kill()
             except Exception: pass
-        self.p = subprocess.Popen([RAPFI_BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  text=True, bufsize=1, cwd=os.path.dirname(RAPFI_BIN))
+        self.cfg_name = _set_rapfi_depth(self.depth, 'none')
+        cmd = []
+        if sys.platform == 'darwin':
+            cmd += ['arch', '-x86_64']      # x86_64 二进制 → Rosetta
+        cmd += [RAPFI_BIN, '--config=' + self.cfg_name]
+        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL,
+                                  text=True, bufsize=1, cwd=RAPFI_DIR)
         # 启动横幅: 读到静默为止(最多 3s) —— 旧版固定读 2 行, 引擎行数一变就协议错位 ✗
         import select as _sel
         _end = time.time() + 3.0
@@ -2577,6 +2709,8 @@ class _RapfiEngine:
                 break
             if not self.p.stdout.readline():
                 break
+        self.start(15)
+
     def _read_line(self, timeout=30):
         import select as _sel
         end = time.time() + timeout
@@ -2590,13 +2724,20 @@ class _RapfiEngine:
                     return line
             if self.p.poll() is not None: return None
         return None
+
     def start(self, size=15):
-        self.p.stdin.write('START {}\n'.format(size)); self.p.stdin.flush()
+        self.p.stdin.write('START {}\n'.format(size))
+        self.p.stdin.write('INFO rule 0\n')                       # 0 = freestyle(无禁手)
+        self.p.stdin.write('INFO timeout_turn {}\n'.format(RAPFI_TIMEOUT_TURN))
+        self.p.stdin.write('INFO timeout_match 0\n')
+        self.p.stdin.flush()
         return self._read_line()
+
     def move(self, stones):
         lines = ['BOARD']
         for r, c, col in stones:
-            lines.append('{},{},{}'.format(c, r, 1 if col == 1 else 2))
+            # 相对引擎: 自己的子 = 1, 对手 = 2 (与 pk_ladder/rapfi_player.py 一致)
+            lines.append('{},{},{}'.format(c, r, 1 if col == self.my_color else 2))
         lines.append('DONE')
         _body = '\n'.join(lines) + '\n'
         try:
@@ -2606,8 +2747,7 @@ class _RapfiEngine:
             #   原来直接冒到 Flask 变 500 (日志一堆 traceback ✗)。这里重启引擎重试一次 ✓
             print('[rapfi] 引擎管道断了 (%s) → 重启引擎重试' % _e)
             try:
-                self.start_new()
-                self.start(15)          # 新进程需要重新 START
+                self.start_new()        # 内部已含 START + INFO，不要再单独 start(15)
                 self.p.stdin.write(_body); self.p.stdin.flush()
             except Exception as _e2:
                 print('[rapfi] 重启引擎后仍失败: %s' % _e2)
@@ -2615,15 +2755,25 @@ class _RapfiEngine:
         resp = self._read_line()
         if resp is None: return None
         parts = resp.split(',')
-        if len(parts) >= 2 and parts[0] != '0':
+        if len(parts) >= 2:
             try:
-                mv = (int(parts[1]), int(parts[0]))
+                x, y = int(parts[0]), int(parts[1])
             except ValueError:
                 return None
+            # 🚨 2026-11-21 修的踩坑: 原判断 `parts[0] != '0'` 把 **x=0 的所有着法**
+            #   （最左一列）都当成"无着"丢掉 → 引擎明明回了 0,7 却判 engine_error。
+            #   pbrain 协议里只有**负数**才是认输/无着（见 ~/pk_ladder/rapfi_player.py）。
+            if x < 0 or y < 0:
+                print('[rapfi] 引擎认输/无着: %r' % resp)
+                return None
+            mv = (y, x)                     # 协议是 x,y(先列后行) → (r,c)
             # ★ 空位校验 (2026-09-26): message_mode 被污染时引擎会回"上一手的坐标"(滞后响应),
             #   落在已有子上 → 判引擎异常, 绝不把废着法塞进棋局(否则整局静默走歪)
             if any(mv[0] == r and mv[1] == c for r, c, _ in stones):
                 print('[rapfi] 收到已占位坐标 %s (疑似滞后/错位响应) → 判引擎异常' % (mv,))
+                return None
+            if not (0 <= mv[0] < 15 and 0 <= mv[1] < 15):
+                print('[rapfi] 坐标越界 %s' % (mv,))
                 return None
             return mv
         return None
@@ -2648,17 +2798,17 @@ def api_eval_start():
         temperature = max(0.05, min(5.0, float(data.get('temperature', 0.05))))
         if not weight:
             return jsonify({'ok': False, 'error': '请选择权重'})
+        if not os.path.isfile(RAPFI_BIN):
+            return jsonify({'ok': False,
+                            'error': 'Rapfi 引擎不存在: %s（设环境变量 GOMOKU_RAPFI_DIR 指向安装目录）' % RAPFI_BIN})
         # 清理旧状态
         if EVAL_STATE.get('engine'):
             try: EVAL_STATE['engine'].close()
             except Exception: pass
-        # 设置 rapfi 难度
-        _set_rapfi_depth(depth)
         # 创建我方 agent
         agent, _ = make_agent(weight, sim)
-        # 创建 rapfi 引擎
-        engine = _RapfiEngine()
-        engine.start(15)
+        # 创建 rapfi 引擎（难度走 --config=config_d{N}.toml；执色 = 我方反色）
+        engine = _RapfiEngine(depth=depth, my_color=(-1 if we_black else 1))
         # 初始化棋盘
         import gym
         env = gym.make('Gomuku-v0')
@@ -2759,7 +2909,12 @@ def api_eval_step():
             cnt = agent.count[s]
             temp = st['config'].get('temperature', 0.05)
             if temp <= 0.05:
-                action = tuple(np.unravel_index(int(np.argmax(cnt.ravel())), (15, 15)))
+                # ★ 2026-11-21: 平局用先验破平 —— sim 小于空点数时 count 全 1，
+                #   原来 np.argmax 会稳定选 (0,0) 角落（我方执白时实测连走 (0,0)(0,1)(0,2)）
+                _pick = _pick_from_counts(agent, s, cnt, board.shape)
+                if _pick is None:
+                    return jsonify({'ok': False, 'error': '搜索无有效着法', 'state': _eval_state()})
+                action = _pick
             else:
                 # 温度采样: count 分布 ^(1/T) 归一化后采样 (与对弈页同语义)
                 pv = cnt.astype(np.float64).ravel()
@@ -3061,9 +3216,10 @@ def _run_analysis(pos_name, stones, weight, sim):
             br = bc = None
             cold = False
             if cnt is not None and qtab is not None:
-                # best = argmax(访问数) = eval 贪心最强应对点 (与有子处 count=0 不冲突)
+                # best = argmax(访问数) = eval 贪心最强应对点（平局用先验破平）
                 cntf = np.asarray(cnt, dtype=np.float32)
-                best_idx = int(np.argmax(cntf.ravel()))
+                _bp = _pick_from_counts(agent, sbytes, cntf, (15, 15))
+                best_idx = (_bp[0] * 15 + _bp[1]) if _bp else int(np.argmax(cntf.ravel()))
                 br, bc = best_idx // 15, best_idx % 15
                 best_qa = round(float(qtab.ravel()[best_idx]), 4)
                 # actual = 棋谱实际落子点 (可能 ≠ argmax)
@@ -3333,11 +3489,13 @@ REPLAY_POOL_DIR = f'{SSH_CHECKPOINT_DIR}/replay_pool'         # 本轮回放池 
 # 熔断器参数 (与 start_vNN.sh 默认一致; 日志里也会印, 以日志为准)
 SPIRAL_RISE, SPIRAL_THR, SPIRAL_HEALTHY = 3, 0.25, 0.15
 # 各槽的【达标线】与【教练来源】(页面直接用; 换槽自动带出)
-VERSION_GOALS = {'v38': 0.55, 'v39': 0.80, 'v40': 0.30, 'v41': 0.30, 'v42': 0.60, 'v24b': 0.30}
+VERSION_GOALS = {'v38': 0.55, 'v39': 0.80, 'v40': 0.30, 'v41': 0.30, 'v42': 0.60,
+                 'v24b': 0.30, 'v24d': 0.30}
 VERSION_COACH = {'v38': 'A2 = v39 it39 (第二轮教练: 黑)', 'v39': "A2' = v38 it77 (第三轮教练: 白)",
                  'v40': '无教练 (纯自对弈单通道线)', 'v41': '无教练 (v40+梯度检查点, 单通道)',
                  'v42': '教练法+自动换边 (学生达标即换边, 颜色动态)',
-                 'v24b': '无教练 (纯自对弈; 黑方空盘首手走 |value| 最小的均衡手)'}
+                 'v24b': '无教练 (纯自对弈; 黑方空盘首手走 |value| 最小的均衡手)',
+                 'v24d': '无教练 (纯自对弈; BAL3 强制均衡: TOPK20/VTH0.35/全局第3手=黑第2手)'}
 if ACTIVE_SLOT.get('coach_note'):
     VERSION_COACH[TRAIN_VERSION] = ACTIVE_SLOT['coach_note']
 COACH_GOAL_RATE = ACTIVE_SLOT['goal']
@@ -3418,13 +3576,47 @@ def fetch_training_data():
     # 一次连接拉取全部数据，用 ===TAG=== 分隔（echo 自带换行；PTY 下 \r 可能把上段末尾与 tag 粘成一行，切段时归还前后缀）
     # LOG 拉全量 (training_v12.log, 用于解析全历史 loss 三条线; tail -200 只够本代)
     parts = [
-        "echo '===LOG==='; cat '" + TRAINING_LOG + "' 2>/dev/null | tail -4000",
+        # ★ 2026-11-23: 4000 → 1500 行。日志里「等待工兵 X/Y」每秒一条，4000 行≈260KB，
+        #   在一次 ssh 里占比最大、把 /api/training 拖到 40s+（超页面轮询窗口）。
+        #   当前状态只需最后几行；run_start/config/横幅已由 ===RUNSTART=== 段单独抓 ⇒ 1500 足够。
+        "echo '===LOG==='; cat '" + TRAINING_LOG + "' 2>/dev/null | tail -800",
+        # ★ 2026-11-23: 本次 run 的启动时刻，**不能**只靠 LOG 窗口里找最后一条 config 行 ——
+        #   训练跑满一天后 tail -4000 已经装不下那条 config（实测 log_since/run_start 全为 None），
+        #   于是工兵日志的"跨 run 时间戳过滤"静默失效。这里让服务器直接回传最后 5 行
+        #   带时间戳的上下文（含 config 行本身），前端从里面取最后一个时间戳当 run_start。
+        "echo '===RUNSTART==='; grep -B4 '^config:' '" + TRAINING_LOG + "' 2>/dev/null | tail -5; "
+        #   ⚠️ 不能用 grep '启动' —— 日志里还有一行「INFO v2 训练启动, device=cuda」，
+        #   tail -1 会抓到它而不是横幅 ⇒ 必须精确锚定 `^=== v2`。
+        "echo '---BANNER'; grep -a '^=== v2' '" + TRAINING_LOG + "' 2>/dev/null | tail -1",
         "echo '===META==='; cat '" + SSH_CHECKPOINT_DIR + "/metadata.json'",
         "echo '===CK==='; ls '" + SSH_CHECKPOINT_DIR + "'/weights_it*.pt 2>/dev/null",
-        "echo '===EXP==='; ls '" + SSH_CHECKPOINT_DIR + "'/worker_data/iter*.pkl 2>/dev/null",
+        # 🚨 2026-11-23: EXP 从「列出每个 pkl 路径」改成「按代聚合计数」。
+        #   原命令 `ls .../iter*.pkl` 在 30+ 代后要吐 3000+ 行(≈180KB)，在 ~13KB/s 链路上
+        #   会把整段 raw 输出顶到截断 ⇒ 后面的 ---GENSTAT / ---METASTAT 全丢，
+        #   表现为 gen_now=None、本代时间锚/ETA 全部消失 ✗
+        "echo '===EXP==='; ls '" + SSH_CHECKPOINT_DIR + "'/worker_data/iter*.pkl 2>/dev/null "
+        "| sed 's#.*/iter##; s#_.*##' | sort -n | uniq -c",
         # 攒批推理服务：近 4 条统计行 + socket 是否存在 (1=在, 0=无)
         "echo '===INF==='; tail -4 '" + INFER_LOG + "' 2>/dev/null; echo '---SOCK'; "
         "ls -l '" + INFER_SOCK + "' 2>/dev/null | wc -l",
+        # ★ 2026-11-23: 原先这些走「第二次 ssh 连接」，实测会被 AutoDL 限流返回空，
+        #   连带 _slot_running 未定义 → 整段代次时间/ETA 丢失。全部并入本条连接。
+        "date '+%Y-%m-%d %H:%M:%S'; date '+%s'; "
+        "grep -a '个工兵(v' '" + TRAINING_LOG + "' | tail -1; "
+        "echo '---START2'; grep -a '训练启动' '" + TRAINING_LOG + "' | tail -1; "
+        "echo '---INFAGE'; stat -c %Y '" + INFER_LOG + "' 2>/dev/null; "
+        # 本代真实产局起点：按【版本序】取最新代的文件 mtime（`ls` 是字典序会取到 iter9 ✗）
+        "echo '---GENSTAT'; stat -c '%Y|%n' " + SSH_CHECKPOINT_DIR +
+        "/worker_data/iter*.pkl 2>/dev/null | sort -t'|' -k2 -V | tail -40; "
+        "echo '---METASTAT'; stat -c %Y " + SSH_CHECKPOINT_DIR + "/metadata.json 2>/dev/null; "
+        # 🚨 这里严禁写方括号 / 引号包裹的 pgrep 模式：
+        #   ssh_cmd 是把命令拼进 expect 的 Tcl 脚本体里的，`[G]omoku` 会被 Tcl 当成
+        #   命令替换 → "invalid command name G" → expect 秒退，**整条连接返回空** ✗
+        #   自匹配那条 bash -c 行改由 Python 侧过滤（含 pgrep / bash -c / === 一律丢弃）。
+        # 🚨 2026-11-23: 训练主进程命令行是 `python -u run_quick.py`（Gomoku-v0_pt_vNN.py 只是被
+        #   import 的模块、工兵才是 Gomoku-worker_vNN.py）⇒ pgrep Gomoku-v0_pt 永远匹配不到主进程，
+        #   slot_running 恒 None。改为按 run_quick 匹配（无引号无方括号，Tcl 安全）。
+        "echo '---SLOTRUN'; ps -eo pid,args | grep run_quick | grep -v grep | head -3",
         # 最近 12 个权重的 mtime(epoch) — 跨进程重启仍连续，用来算每代耗时。
         # 🚨 必须按 mtime 数值排序后取尾（`ls | tail` 是字典序，会取到 it92..it99 这类老代）
         "echo '===CKTS==='; ls -l --time-style=+%s '" + SSH_CHECKPOINT_DIR + "'/weights_it*.pt "
@@ -3450,23 +3642,51 @@ def fetch_training_data():
         "echo '---SHARDS'; ls -l --time-style=+%s '" + GATE_LOG_DIR + "/*_shard*.jsonl' 2>/dev/null "
         "| sort -k6 -n | tail -5",
     ]
-    # ★ 2026-11-16: 工兵日志不再塞进上面那条大命令 —— 19 个工兵 × tail -600 约 150KB，
-    #   在 ~20KB/s 的链路上会把 expect 的 25s 超时打满 → 输出被截断在后半段，
-    #   后半批工兵在页面上显示成「—」。更糟的是【部分成功】也能通过 got_valid 检查
-    #   （主日志段完整就算有效），于是半成品被当成缓存，页面数字会比真实值少一半。
-    #   改为：主命令只拉文件级信息，工兵日志分 2 批独立 ssh（每批 10 个）。
+    # ★ 2026-11-23（重要）：工兵日志改为**并入本条主连接**，一次轮询只开 1 条 ssh。
+    #   原因：background_poll 每 8s 跑一次，原来每次要开 3 条 ssh（主 + 2 批工兵）
+    #   ≈ 22 条/分钟 → AutoDL 十几次轮询后开始拒连，主连接返回 len=0，
+    #   整页数据退回旧缓存（表现为代次/进度停在很早的状态、时间锚乱跳）✗
+    #   同时 tail -200 × 15 ≈ 60KB，叠加主输出仍在一次 expect 的超时余量内。
+    parts += ["echo '===W" + str(i) + "==='; tail -120 '" + WORKER_LOGS[i] + "' 2>/dev/null"
+              for i in range(WORKER_NUM)]
     raw = ssh_cmd('; '.join(parts))
-    _wraw = []
-    for _b in range(0, WORKER_NUM, 10):
-        _wp = ["echo '===W" + str(i) + "==='; tail -600 '" + WORKER_LOGS[i] + "' 2>/dev/null"
-               for i in range(_b, min(_b + 10, WORKER_NUM))]
-        _wraw.append(ssh_cmd('; '.join(_wp)))
-    raw = raw + '\n' + '\n'.join(_wraw)
+    # ★ 2026-11-23: 单连接。上面那段「工兵日志分 2 批独立 ssh」的注释已作废 ——
+    #   实测每次轮询开 3 条 ssh 会被 AutoDL 限流（返回空 → 页面数字冻结），
+    #   工兵 tail 已并入 parts，这里只开 1 条连接。
+    # ★ 2026-11-23: 主连接偶发返回空/被截断（AutoDL 限流）。判据 = 没有 ===LOG=== 段头
+    #   或长度过短 ⇒ 隔 3s 重试一次；仍不行才走后面的「保留上次缓存」逻辑。
+    if ('===LOG===' not in (raw or '')) or len(raw or '') < 5000:
+        print('[train] 主连接输出异常(len=%d)，3s 后重试一次' % len(raw or ''))
+        time.sleep(3)
+        _raw2 = ssh_cmd('; '.join(parts))
+        if _raw2 and len(_raw2) > len(raw or ''):
+            raw = _raw2
+
+    # 🚨 2026-11-23 修（关键）：expect 会把 `spawn ssh ... "整条命令"` 这一行回显进输出，
+    #   而这条命令里**含全部 ===TAG===**（===LOG=== / ===META=== / ===EXP=== …）。
+    #   切段是按行 re.search 第一个 tag ⇒ 这一行会被当成最后一个 tag 的段内容，
+    #   更糟的是它**可能出现在输出末尾**（PTY 缓冲），于是把 segs['LOG'] 清空后只留一行
+    #   命令文本 → cur_lines 只有 1 行 → 「等待工兵 X/Y」完全读不到，
+    #   进度退回配额公式 151 分母、且所有基于主日志的解析全废 ✗
+    #   ⇒ 切段前先把 expect 的回显行/密码提示行丢掉。
+    _raw_lines = []
+    for _l in raw.split('\n'):
+        _s = _l.lstrip()
+        if _s.startswith('spawn ') or _s.startswith('password:') or "s password:" in _s:
+            continue
+        _raw_lines.append(_l)
+    raw = '\n'.join(_raw_lines)
 
     # 按 ===TAG=== 切段：re.search 容忍粘连行，标记前后残留（如 } 或 {）分别归还给前/后段
     segs = {}
     cur = None
     for line in raw.split('\n'):
+        # 🚨 2026-11-23: `pgrep -af Gomoku-v0_pt_v` 会把【本条命令自己】的 bash -c 行也打出来，
+        #   而那一行的命令行里含**全部** ===TAG===。实测它在 LOG 段之后（@4358）出现，
+        #   被当成新的段标记 → segs['LOG'] 被重置成 0 行 → 「等待工兵 X/Y」读不到 →
+        #   进度退回配额公式（分母 151）✗。真实数据行绝不会含 2 个 tag ⇒ 按数量过滤。
+        if len(re.findall(r'===\w+===', line)) > 1:
+            continue
         m = re.search(r'===(\w+)===', line)
         if m:
             prefix = line[:m.start()].strip()
@@ -3508,6 +3728,51 @@ def fetch_training_data():
                 data['run_start_time'] = _m.group(1)
                 break
     data['run_start_ts'] = run_start_ts
+
+    # ★ 2026-11-23: 兜底 —— 若 LOG 窗口里找不到 config 行（训练跑久了必然如此），
+    #   用 ===RUNSTART=== 段（服务器 grep -B4 '^config:' | tail -5）里的最后一个时间戳。
+    if not run_start_ts:
+        from datetime import datetime as _d4
+        _rs = [l for l in segs.get('RUNSTART', []) if l.strip()]
+        for _l in reversed(_rs):
+            _m = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', _l)
+            if _m:
+                try:
+                    run_start_ts = _d4.strptime(_m.group(1), '%Y-%m-%d %H:%M:%S').timestamp()
+                    data['run_start_time'] = _m.group(1)
+                    data['run_start_source'] = 'RUNSTART段(LOG窗口外)'
+                except ValueError:
+                    pass
+                break
+        data['run_start_ts'] = run_start_ts
+
+    # 🚨 2026-11-22: 工兵日志也是【跨 run 追加】的，而工兵解析取的是"尾部出现的最大代"。
+    #   实测：v24d 从 it0 重训、主日志只有 1 条 config、worker_data 最大代=1，
+    #   但工兵日志尾部还留着上一轮 v24c 的「工兵N 代233 局x/10」→ 页面显示 代234/233，
+    #   与真实代次差一个 run ✗（比主日志污染更隐蔽：主日志靠 config 行能切，工兵日志没有）。
+    #   修法：工兵日志每行都有 `YYYY-MM-DD HH:MM:SS` 时间戳 ⇒ 只保留【本次 run 启动之后】的行。
+    #   无时间戳的续行按"上一条是否保留"跟随，避免把旧 run 的多行输出零碎带进来。
+    if run_start_ts:
+        from datetime import datetime as _d3
+        _w_kept, _w_dropped = 0, 0
+        for _k in [k for k in segs if k.startswith('W') and k[1:].isdigit()]:
+            _out, _stale = [], False
+            for _l in segs[_k]:
+                _m = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', _l)
+                if _m:
+                    try:
+                        _ts = _d3.strptime(_m.group(1), '%Y-%m-%d %H:%M:%S').timestamp()
+                        _stale = _ts < run_start_ts
+                    except ValueError:
+                        _stale = False
+                if _stale:
+                    _w_dropped += 1
+                    continue
+                _out.append(_l)
+                _w_kept += 1
+            segs[_k] = _out
+        data['worker_lines_kept'] = _w_kept
+        data['worker_lines_stale_dropped'] = _w_dropped
 
 
     # ── metadata 提前解析（当前代 + 运行配置都要用） ──
@@ -3641,22 +3906,14 @@ def fetch_training_data():
     data['current_game'] = cur_game
     data['current_denom'] = cur_denom
 
-    # ── 第二次连接：服务器当前时间 + 本代产局起点 + 攒批推理服务存活 ──
-    # 注意：grep 模式里避免 [ ] 方括号（expect Tcl 命令替换陷阱）
+    # ── 本代时间锚 / 服务器时间 / 实际在跑的槽 ──
+    # 🚨 2026-11-23: 这一段原来是**第二次 ssh 连接**，实测它会偶发返回空
+    #   （AutoDL 短时间连开多条 ssh 被限流）→ 后面的 _slot_running 未定义 →
+    #   UnboundLocalError 把整段代次时间/ETA 打掉，页面表现为「本代进度有、时间/ETA 全空」✗
+    #   ⇒ 已并入上面第一次连接（parts 里），这里直接用同一份 raw，不再单开连接。
+    #   注意：grep 模式里避免 [ ] 方括号（expect Tcl 命令替换陷阱）
     try:
-        raw_t = ssh_cmd("date '+%Y-%m-%d %H:%M:%S'; date '+%s'; "
-                        "grep -a '个工兵(v' '" + TRAINING_LOG + "' | tail -1; "
-                        "echo '---START2'; grep -a '训练启动' '" + TRAINING_LOG + "' | tail -1; "
-                        "echo '---INFAGE'; stat -c %Y '" + INFER_LOG + "' 2>/dev/null; "
-                        # ★ 本代真实产局起点（2026-09-26 用户报"时间统计不太对"）：
-                        #   metadata.json mtime = 主进程写"本代 iteration"的时刻 ≈ 本代开产时刻
-                        #   本代各局文件 mtime  = 逐局落盘时刻（首局比开产晚一局耗时）
-                        #   旧锚点「工兵已重启/进程启动」在主进程中途重启时会漂到进程启动 ✗
-                        "echo '---GENSTAT'; stat -c '%Y|%n' " + SSH_CHECKPOINT_DIR + "/worker_data/iter*.pkl 2>/dev/null | tail -140; "
-                        "echo '---METASTAT'; stat -c %Y " + SSH_CHECKPOINT_DIR + "/metadata.json 2>/dev/null; "
-                        # ★ 服务器【实际在跑】哪个槽 (2026-09-27): 配置(active_slot.json) 与实跑不一致
-                        #   时前端挂 ⚠ —— 防"整轮用错网络/看错槽"这类地雷 ✗
-                        "echo '---SLOTRUN'; pgrep -af 'Gomoku-v0_pt_v' | head -2")
+        raw_t = raw
         ts_now = ts_start = ts_restart = ts_prog = None
         now_epoch = inf_mtime = meta_ts = None
         _slot_running = None
@@ -3690,9 +3947,26 @@ def fetch_training_data():
                     ts_restart = mts.group(1)    # 「N个工兵(v36)已重启」= 旧的产局起点锚
                 continue
             if _after == 'SLOTRUN':
+                # 自匹配过滤：pgrep 会把【本条命令自己】的 bash -c 行也打出来，
+                # 而那一行里含全部 ===TAG=== → 切段时把 LOG 段清空 ✗
+                # 只丢「命令自身回显」：含 tag（pgrep 自匹配那条）或 pgrep 字样。
+                # ⚠️ 不能丢含 'bash -c' 的行 —— 训练主进程正是通过
+                #   `SCREEN -dmS gomoku_v24b bash -c ... run_quick.py` 起的，
+                #   丢了它 slot_running 就永远 None（2026-11-23 踩过）。
+                if '===' in l or 'pgrep' in l:
+                    continue
                 msr = re.search(r'Gomoku-v0_pt_(v\d+)\.py', l)
                 if msr:
                     _slot_running = msr.group(1)
+                elif 'run_quick' in l:
+                    # 主进程在跑但命令行里没有版本号 ⇒ 用本 web 配置的槽（不算 mismatch）
+                    _slot_running = TRAIN_VERSION
+        # 🚨 2026-11-23: ts_now 原取「raw 里第一条带时间戳的行」= LOG 段**最旧**一行
+        #   ⇒ elapsed = 旧行时刻 − 本代起点 ≈ 负数 → max(0,..) = 0.0、rate/ETA 全空 ✗
+        #   服务器在命令末尾打了 `date +%s`（now_epoch），以它为准才是「现在」。
+        if now_epoch:
+            from datetime import datetime as _dt_now
+            ts_now = _dt_now.fromtimestamp(now_epoch).strftime('%Y-%m-%d %H:%M:%S')
         data['slot_running'] = _slot_running
         data['slot_config'] = TRAIN_VERSION
         data['slot_mismatch'] = bool(_slot_running and _slot_running != TRAIN_VERSION)
@@ -3759,8 +4033,23 @@ def fetch_training_data():
     #   只在当前 run 的行里找（日志跨轮追加，旧 run 的开局过滤行不能算到新 run 头上）。
     variant, vnote = (ACTIVE_SLOT.get('variant') or TRAIN_VERSION), ''
     _mine = cur_lines if cur_lines else log_lines
+    # ★ 2026-11-22: 先认【启动横幅】—— 训练脚本自己在第一行打 `=== v24d 启动 ... ===`，
+    #   这是唯一权威来源。v24d 起新机制（BAL3 第N手强制均衡）既没有「开局过滤」行、
+    #   也没有「均衡首手」行，只靠下面两个旧判据会一路退化成 ACTIVE_SLOT 里的 v24b ✗
+    #   横幅是每次启动的**第一行**，位于 config 行之前 ⇒ 不在 cur_lines 里，
+    #   必须扫全量日志并取**最后一条**（追加模式下越靠后越新）。
+    #   ★ 2026-11-23: 日志跑久后 tail -4000 也装不下横幅 ⇒ 再用 ===RUNSTART=== 段里的
+    #   `---BANNER` 兜底（服务器 grep '启动' | tail -1，永远拿得到最新那条）。
+    _banners = [l for l in log_lines if '启动' in l and '===' in l]
+    _banners += [l for l in segs.get('RUNSTART', []) if '启动' in l and '===' in l]
+    for _l in reversed(_banners):
+        _m = re.search(r'===\s*(v2\w+)\s*启动\s*(.*?)\s*===', _l)
+        if _m:
+            variant = _m.group(1)
+            vnote = ('启动横幅: ' + _m.group(2)).strip()
+            break
     _of = [l for l in _mine if '开局过滤' in l]
-    if _of:
+    if _of and not vnote:
         variant = ACTIVE_SLOT.get('variant_if_open_filter') or 'v24c'
         _m = re.search(r'阈值\s*([\d.]+)', _of[-1])
         _th = _m.group(1) if _m else '?'
@@ -3768,9 +4057,12 @@ def fetch_training_data():
         vnote = f'开局过滤 ON · |V|阈值 {_th}'
         if _fail:
             vnote += f' · {_fail} 局重抽失败退回0手'
-    elif any('均衡首手' in l for l in _mine):
+    elif any('均衡首手' in l for l in _mine) and not vnote:
         variant = ACTIVE_SLOT.get('variant_if_balanced') or 'v24b'
         vnote = '均衡首手 ON'
+    # BAL3 机制兜底说明（v24d 起）：横幅里已带 TOPK/VTH/STEP，这里只在没拿到横幅时补一句
+    if not vnote and re.match(r'v24[d-z]', str(variant)):
+        vnote = 'BAL3 第N手强制均衡 ON'
     data['variant'] = variant
     data['variant_note'] = vnote
     data['variant_open_filter'] = bool(_of)
@@ -3855,6 +4147,15 @@ def fetch_training_data():
     _seen_wi = [int(k[1:]) for k in segs if k.startswith('W') and k[1:].isdigit()]
     _n_cells = max([data['worker_count']] + ([max(_seen_wi) + 1] if _seen_wi else []))
     data['worker_cells'] = _n_cells
+    # 在产的工兵代 = 所有工兵段里出现过的最大代号（工兵一换代就整体前进）
+    _all_wit = []
+    for _k in [k for k in segs if k.startswith('W') and k[1:].isdigit()]:
+        for _l in segs.get(_k, []):
+            _m2 = re.search(r'工兵\d+ 代(\d+) 局', _l)
+            if _m2:
+                _all_wit.append(int(_m2.group(1)))
+    _active_wit = max(_all_wit) if _all_wit else cur_it
+    data['worker_active_iter'] = _active_wit
     for i in range(_n_cells):
         w = {'id': i, 'status': '—', 'game': 0, 'iter': None, 'denom': None,
              'quota': quota, 'black': 0, 'white': 0}
@@ -3874,12 +4175,26 @@ def fetch_training_data():
         if seen:
             w['iter'] = max(seen)
             st = seen[w['iter']]
-            w['game'] = st['game']
+            # 🚨 2026-11-23: 工兵的 `局N` 是**尝试序号**，不是完成局数！
+            #   动态模式(_n_max=GOMOKU_MAX_GAMES)下 gid 会超过 GAMES_PER_ITER，
+            #   而且 BAL3 不达标会重开同一 gid —— 实测代33 各工兵显示 局11~19/10，
+            #   求和 233，而真实写入只有 77 局（黑42+白35）✗
+            #   ⇒ 完成局数 = 有「: 黑胜/白胜」结果行的局数；`局N` 另存 attempts 供核对。
+            w['attempts'] = st['game']
+            _written = st['black'] + st['white']
+            # ★ 2026-11-23 二次修: 不要再退回 st['game'] —— 那会把「第 3 次尝试」当成
+            #   「已完成 3 局」，15 个工兵一求和就虚高（实测 20 vs 主日志 9）✗
+            #   完成局数 = 有结果行的局数；尝试序号只在括号里提示。
+            w['game'] = _written
             w['denom'] = st['denom'] or 10
-            w['black'], w['white'] = st['black'], st['white']
             w['status'] = f"代{w['iter']} 局{w['game']}/{w['denom']}"
-            # ★ 当前代的黑白计数: 工兵日志的代号 = metadata.iteration 或 (metadata.iteration-1) 都算本轮
-            if w['iter'] in (cur_it, prod_it):
+            if w['attempts'] > w['game']:
+                w['status'] += f" (尝试{w['attempts']})"
+            # ★ 2026-11-23 修: 只统计【当前在产的那一代】。
+            #   原来 cur_it 和 prod_it(=cur_it-1) 都算 ⇒ 工兵刚切代时，
+            #   上一代的尾巴局会被算进本代（实测页头「在产代共 28 局」而工兵格合计只有 24）✗
+            #   口径: 取所有工兵里最大的那个代号 = 正在产的那一代(_active_wit，见下)。
+            if w['iter'] is not None and w['iter'] == _active_wit:
                 bw_cur['black'] += st['black']
                 bw_cur['white'] += st['white']
             elif w['iter'] is not None and prod_it is not None and w['iter'] < prod_it:
@@ -3929,6 +4244,17 @@ def fetch_training_data():
         _prev = _bw_persist.get(str(_it)) or {}
         if (_b + _w2) >= (int(_prev.get('black', 0)) + int(_prev.get('white', 0))):
             _bw_persist[str(_it)] = {'black': _b, 'white': _w2}
+    # 🚨 2026-11-23: 剪掉"本次 run 不可能存在"的代次。
+    #   这份持久化按代号做 key，而 v24d 是从 it0 重训的 —— 上一轮 v24c 已经跑到 233 代，
+    #   重启前的日志尾部把「工兵N 代231..234 局x/10」也写进了 store，
+    #   于是白胜率趋势图上会出现 231~234 这些**假代次**（超过当前代），
+    #   而且它们局数 >=90 会通过"在产代"过滤，直接混进趋势 ✗
+    if cur_it:
+        _bad = [k for k in list(_bw_persist) if str(k).isdigit() and int(k) > cur_it + 1]
+        for k in _bad:
+            _bw_persist.pop(k, None)
+        if _bad:
+            print(f'[bw-store] 剪掉超前的 {len(_bad)} 个代次(>代{cur_it}): {sorted(_bad)[:8]}')
     try:
         json.dump(_bw_persist, open(_BW_STORE, 'w'))
         bw_gen = {int(k): {'games': {}} for k in _bw_persist}
@@ -3939,6 +4265,7 @@ def fetch_training_data():
 
     if bw_gen:
         _gits, _gb, _gw, _gt, _gwr = [], [], [], [], []
+        _partial = []          # 局数不足本代目标一半的代（胜率置 None，避免假谷底）
         for _it in sorted(bw_gen):
             _gk = bw_gen[_it]['games']
             if 'black' in _gk:                       # 来自本地持久化
@@ -3948,31 +4275,65 @@ def fetch_training_data():
                 _w2 = sum(1 for v in _gk.values() if v == '白')
             _n = _b + _w2
             _gits.append(_it); _gb.append(_b); _gw.append(_w2); _gt.append(_n)
-            _gwr.append(round(100.0 * _w2 / _n, 1) if _n else None)
+            # ★ 2026-11-23: 不完整代不给胜率。工兵日志窗口/未同步的旧代里会出现
+            #   「代4 只见到 17 局」「代23 只见到 3 局」这种半截数据（真值都是 100 局），
+            #   直接算胜率会在趋势曲线上画出假谷底 ✗（实测代23 = 白 0/3 = 0%）
+            #   判据：本代局数 < 目标的一半 ⇒ 视为不完整，white_rate 置 None（图上留空档）。
+            _tgt = data.get('current_denom') or 100
+            if _n and _n >= 0.5 * float(_tgt):
+                _gwr.append(round(100.0 * _w2 / _n, 1))
+            else:
+                _gwr.append(None)
+                _partial.append(_it)
         data['bw_per_gen'] = {'iterations': _gits, 'black': _gb, 'white': _gw,
-                              'total': _gt, 'white_rate': _gwr}
+                              'total': _gt, 'white_rate': _gwr, 'partial': _partial}
+        if _partial:
+            print('[bw] 剔除不完整代(胜率留空): %s' % _partial[:12])
         # 白胜率趋势（跨代）—— 页面「白胜率」曲线直接吃这个
         data['white_rate_trend'] = {'iterations': _gits, 'rate': _gwr, 'total': _gt}
 
     # ★ 2026-11-15: 主进程也产局的版本（v24/v24b 家族）本代总局数 =
     #     工兵数 × 每工兵局数 + 主进程局数，而不是主日志里那个"每工兵 10 局"的分母。
     #   旧版(v36~v42) main_episodes_per_iter=0 → 公式退化成 工兵数×局数，与原口径一致。
+    # ★ 2026-11-23 修：本代进度的**权威来源 = 主日志的「代N 局X/Y」**。
+    #   旧公式 `worker_count × worker_games_per_worker + 主进程局数` 实测算出 15×10+1=151，
+    #   而真实目标是 TOTAL=100（v24d 是动态模式：工兵各领 10 局配额，但主进程凑够 100 局就收）
+    #   → 分母虚高 51%。更糟的是分子用 `_wg + _main_done` **重复计数**（工兵局数本来就被
+    #   主进程汇总进那个 X 里了），两个错一起把 68/100 显示成 151/151 ✗
+    #   现在：优先按 cur_it 精确匹配主日志 → 拿不到再退回最新一条进度行 → 都没有才用配额公式。
     if cur_it is not None:
+        _lg_game = _lg_denom = None
+        # ① 首选「等待工兵: X/Y局已到」—— 这是主进程汇总的**本代真实进度**（v24 家族唯一权威）
+        for line in reversed(cur_lines):
+            m = re.search(r'等待工兵:\s*(\d+)/(\d+)局已到', line)
+            if m:
+                _lg_game, _lg_denom = int(m.group(1)), int(m.group(2))
+                break
+        # ② 备选「代N 局X/Y」—— ⚠️ 注意主进程每代还会打一条自己的对局行
+        #   `代33 局1/1: 黑胜`（Y=1），那不是进度；要求 Y 不小于工兵数才算进度行。
+        if _lg_game is None:
+            for line in reversed(cur_lines):
+                m = re.search(r'代(\d+)\s+局(\d+)/(\d+)', line)
+                if m and int(m.group(3)) >= max(2, data.get('worker_count') or 0):
+                    _lg_game, _lg_denom = int(m.group(2)), int(m.group(3))
+                    break
         _wg = sum(w.get('game') or 0 for w in workers
                   if w.get('iter') == prod_it) or sum(w.get('game') or 0 for w in workers)
-        _total_target = (data['worker_count'] * data['worker_games_per_worker']
-                         + (data.get('main_episodes_per_iter') or 0))
-        _main_done = 0
-        for line in reversed(cur_lines):
-            m = re.search(r'代%d\s+局(\d+)/(\d+)' % cur_it, line)
-            if m:
-                _main_done = int(m.group(1))
-                break
-        if _total_target > 0:
-            data['current_denom'] = _total_target
-            data['denom_includes_main'] = True   # 前端不要再 + 主进程局数
-        if data.get('main_episodes_per_iter'):
-            data['current_game'] = min(_wg + _main_done, _total_target)
+        _main_done = _lg_game or 0
+        if _lg_game is not None and _lg_denom:
+            data['current_denom'] = _lg_denom
+            data['current_game'] = min(_lg_game, _lg_denom)
+            data['denom_includes_main'] = True
+            data['progress_source'] = '主日志 代N 局X/Y'
+            data['worker_games_sum'] = _wg          # 仅供核对，不参与进度
+        else:
+            _total_target = (data['worker_count'] * data['worker_games_per_worker']
+                             + (data.get('main_episodes_per_iter') or 0))
+            if _total_target > 0:
+                data['current_denom'] = _total_target
+                data['denom_includes_main'] = True
+                data['current_game'] = min(_wg + _main_done, _total_target)
+                data['progress_source'] = '配额公式(兜底)'
         data['main_games_done'] = _main_done
 
     # ── 攒批推理服务统计（独立进程独占 GPU；统计行每 30s 一条） ──
@@ -4729,14 +5090,17 @@ def fetch_training_data():
     data['checkpoints'] = sorted(cks)
 
     # 经验存档（v2 worker_data 文件 iter{N}_{wid}_game_{M}.pkl）
+    # ★ 2026-11-23: EXP 现在是「计数 代次」两列（服务器端 uniq -c 聚合），不再逐文件列路径
     exps = []
     for line in segs.get('EXP', []):
-        m = re.search(r'iter(\d+)_', line)
+        m = re.search(r'^\s*(\d+)\s+(\d+)\s*$', line)
         if m:
-            it = int(m.group(1))
-            if it not in exps:
-                exps.append(it)
-    data['experiences'] = sorted(exps)
+            exps.append(int(m.group(2)))
+            continue
+        m = re.search(r'iter(\d+)_', line)      # 兼容旧格式
+        if m:
+            exps.append(int(m.group(1)))
+    data['experiences'] = sorted(set(exps))
 
     # P1 2026-09-10: SSH 通道慢/限流时 ssh_cmd 返回空 → 旧逻辑无条件 clear 会让驾驶舱整页空白且无日志
     # 现在: 仅在拿到有效数据时替换缓存; 失败则保留上次成功数据 + 标记 ssh_ok=False 供前端提示
@@ -4777,7 +5141,10 @@ def background_poll():
             fetch_training_data()
         except Exception as e:
             print(f'[train-pool] {e}')
-        time.sleep(8)
+        # ★ 2026-11-23: 8s → 30s。每次轮询要开 1 条 ssh（含 ~60KB 工兵日志），
+        #   8s 间隔会被 AutoDL 判成频繁连接而限流（返回空 → 页面数字冻结）✗
+        #   页面本身有「刷新」按钮，30s 的自动刷新足够。
+        time.sleep(30)
 
 
 # ── 权重自动同步（2026-08-02 新增：本地 web 权重趋势需要最新服务器权重） ──
@@ -5001,16 +5368,23 @@ def api_opening_dist():
             return jsonify({'ok': False, 'error': f'未知版本 {version}'})
         _, wdir, mod_path, _ = ver
         wdir_full = os.path.join(PARENT_DIR, wdir)
-        files = glob.glob(os.path.join(wdir_full, f'weights_it*_{version}.pt'))
+        # 权重文件后缀 ≠ 槽名：v24/v24b/v24c 的权重都叫 weights_it{N}_v24.pt
+        # （训练脚本 VERSION 恒为 "v24"，变体只是环境变量）→ 必须用 slot_config 的 weight_suffix
+        try:
+            from slot_config import active_cfg  # noqa: F401
+            wsuf = active_cfg(override=version).get('weight_suffix') or version
+        except Exception:
+            wsuf = version
+        files = glob.glob(os.path.join(wdir_full, f'weights_it*_{wsuf}.pt'))
         its = []
         for f in files:
             # ^ 锚定防双重后缀污染 (weights_it0_v12_v12.pt / weights_it0_v14_v12.pt 不匹配)
-            m = re.search(r'^weights_it(\d+)_' + version + r'\.pt$', os.path.basename(f))
+            m = re.search(r'^weights_it(\d+)_' + wsuf + r'\.pt$', os.path.basename(f))
             if m:
                 its.append((int(m.group(1)), f))
         its.sort()  # 自然序 (数值), 避开字典序 it10<it2 的坑
         if not its:
-            return jsonify({'ok': False, 'error': f'{wdir} 无 {version} 权重'})
+            return jsonify({'ok': False, 'error': f'{wdir} 无 {wsuf} 权重'})
         cache_file = os.path.join(SCRIPT_DIR, 'opening_dist_cache.json')
         cache = {}
         if os.path.exists(cache_file):

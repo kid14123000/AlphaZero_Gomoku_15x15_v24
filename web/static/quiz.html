@@ -46,7 +46,7 @@
 
   <div class="card">
     <div class="row">
-      <select id="verSel"><option value="v42">v42</option><option value="v41">v41</option><option value="v40">v40</option><option value="v39">v39</option><option value="v38">v38</option><option value="v37">v37</option><option value="v36">v36</option><option value="v35">v35</option><option value="v34">v34</option><option value="v33">v33</option><option value="v32">v32</option><option value="v31">v31</option><option value="v29">v29</option><option value="v28">v28</option><option value="v27">v27</option><option value="v26">v26</option><option value="v25">v25</option><option value="v24">v24</option><option value="v23">v23</option><option value="v21b">v21b</option><option value="v21">v21</option><option value="v20b">v20b</option><option value="v19">v19</option><option value="v18">v18</option><option value="v12">v12</option><option value="v14">v14</option><option value="v10">v10</option><option value="v8">v8</option></select>
+      <select id="verSel"><option value="">加载中…</option></select>
       <select id="genSel"><option>加载中…</option></select>
       <span style="font-size:12px;color:#94a3b8">模式:</span>
       <label style="font-size:13px"><input type="radio" name="mode" value="policy" checked onchange="toggleMode()"> 静态 policy</label>
@@ -112,12 +112,26 @@ async function loadWeights() {
                             : '<option value="">无权重</option>';
 }
 document.getElementById('verSel').onchange = loadWeights;
-// ★ 默认版本跟随【活跃槽】(2026-09-27 单一真相源 active_slot.json) —— 换槽不用改本页
-fetch(API + '/api/slot').then(r=>r.json()).then(s=>{
-  const sel=document.getElementById('verSel');
-  if(s&&s.slot&&[...sel.options].some(o=>o.value===s.slot)) sel.value=s.slot;
+// ★ 2026-11-21: 同 eval.html —— 版本下拉从真实权重生成，默认取活跃槽的【权重版本】
+//   （槽名 v24b ≠ 权重版本 v24；硬编码列表会让默认值落到 v42 → 列表全空）
+async function initVersionSelect() {
+  try {
+    const r = await fetch(API + '/api/weights').then(d => d.json());
+    const ws = r.weights || [];
+    const vers = [...new Set(ws.map(w => w.version))];
+    const sel = document.getElementById('verSel');
+    sel.innerHTML = vers.length
+      ? vers.map(v => `<option value="${v}">${v}</option>`).join('')
+      : '<option value="">无权重</option>';
+    const want = r.active_weight_version || r.active;
+    if (want && vers.includes(want)) sel.value = want;
+    else if (vers.length) sel.value = vers[0];
+  } catch (e) {
+    console.error('initVersionSelect', e);
+  }
   loadWeights();
-}).catch(()=>loadWeights());
+}
+initVersionSelect();
 
 async function loadQuizCount() {
   const r = await fetch(API + '/api/positions/list').then(d => d.json());

@@ -5,7 +5,8 @@
 """
 import subprocess, os, time, select
 
-BIN = os.path.expanduser('~/rapfi/run/pbrain-rapfi')
+BIN = os.path.join(os.environ.get('GOMOKU_RAPFI_DIR')
+                   or os.path.expanduser('~/rapfi_run'), 'pbrain-rapfi')
 
 
 def read_line(p, timeout=20):

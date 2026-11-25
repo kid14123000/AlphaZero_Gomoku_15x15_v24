@@ -22,7 +22,10 @@ METADATA_PATH = os.path.join(CHECKPOINT_DIR, 'metadata.json')
 WEIGHTS_PATH = os.path.join(CHECKPOINT_DIR, 'weights.pt')
 WORKER_DIR = os.path.join(CHECKPOINT_DIR, 'worker_data')
 
-GAMES_PER_ITER = 10  # 每个工兵每代10局
+GAMES_PER_ITER = int(os.environ.get("GAMES_PER_WORKER", "10"))  # 每工兵每代局数（与 trainer 的 worker_games_per_worker 对齐）
+GOMOKU_DYNAMIC = int(os.environ.get("GOMOKU_DYNAMIC", "0"))     # 1=动态领局（跑完一局就领下一局，直到 trainer 放 stop 文件）
+GOMOKU_MAX_GAMES = int(os.environ.get("GOMOKU_MAX_GAMES", "40"))  # 动态模式的兜底上限，防跑飞
+GOMOKU_TOTAL_GAMES = int(os.environ.get("GOMOKU_TOTAL_GAMES", "0"))  # >0: 工兵自己数总局数，够了就停（不等 trainer）
 
 torch.backends.cudnn.allow_tf32 = True
 torch.set_num_threads(1)
@@ -79,15 +82,31 @@ def generate_and_save(iteration, wid):
     # 开局约束：不强制（v2 不启用）
     force_center = False
 
-    for gid in range(GAMES_PER_ITER):
+    _stopf = os.path.join(WORKER_DIR, 'stop_iter{}'.format(iteration))
+    _n_max = GOMOKU_MAX_GAMES if GOMOKU_DYNAMIC else GAMES_PER_ITER
+    for gid in range(_n_max):
+        if GOMOKU_DYNAMIC and os.path.exists(_stopf):
+            logging.info('工兵{} 收到停止信号，本代共 {} 局'.format(wid, gid))
+            break
         path = os.path.join(WORKER_DIR, f'iter{iteration}_{wid}_game_{gid}.pkl')
         # 跳过已存在的局（重启衔接：代内续跑，不覆盖不重算）
         if os.path.exists(path):
             logging.info('工兵{} 代{} 局{} 已存在，跳过'.format(wid, iteration, gid))
             continue
         try:
-            df = self_play_fn(env, agent, return_trajectory=True, verbose=False,
-                              force_center=force_center)
+            df = None
+            for _try in range(int(os.environ.get("GOMOKU_BAL3_TRIES", "3"))
+                              if int(os.environ.get("GOMOKU_BAL3", "0")) else 1):
+                df = self_play_fn(env, agent, return_trajectory=True, verbose=False,
+                                  force_center=force_center)
+                if df is not None:
+                    break
+                logging.info('工兵{} 代{} 局{} 第{}次不满足均衡，重开'.format(
+                    wid, iteration, gid, _try + 1))
+            if df is None:
+                logging.warning('工兵{} 代{} 局{} 连续不满足均衡，跳过'.format(
+                    wid, iteration, gid))
+                continue
         except Exception as e:
             logging.error('工兵{} 代{} 局{} 自对弈失败: {}'.format(wid, iteration, gid, e))
             time.sleep(5)  # 失败重试前稍等
@@ -98,6 +117,17 @@ def generate_and_save(iteration, wid):
         ws = '黑胜' if w == 1 else '白胜' if w == -1 else '平局'
         logging.info('工兵{} 代{} 局{}/{}: {} {}条'.format(
             wid, iteration, gid + 1, GAMES_PER_ITER, ws, len(df)))
+        # 动态模式：自己数总局数，够了立即停（不必等 trainer 的 stop 文件）
+        if GOMOKU_DYNAMIC and GOMOKU_TOTAL_GAMES > 0:
+            try:
+                _n = len(glob.glob(os.path.join(
+                    WORKER_DIR, 'iter{}_*_game_*.pkl'.format(iteration))))
+                if _n >= GOMOKU_TOTAL_GAMES:
+                    logging.info('工兵{} 已达总目标 {}/{} 局，退出'.format(
+                        wid, _n, GOMOKU_TOTAL_GAMES))
+                    break
+            except Exception:
+                pass
     return True
 
 

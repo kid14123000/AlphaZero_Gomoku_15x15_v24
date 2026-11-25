@@ -117,6 +117,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--version', default=None)
     ap.add_argument('--keep-tar', action='store_true')
+    ap.add_argument('--iters', default='', help='只拉指定代，逗号分隔（如 106,107）；缺省=全量')
     a = ap.parse_args()
 
     try:
@@ -137,12 +138,23 @@ def main():
     # ── 1. 远端统计 + 打包 ──
     t0 = time.time()
     rb = f'/tmp/replay_bundle_{version}.tgz'
-    cmd = (f'cd {remote_dir} || exit 1; '
-           f'echo "WK=$(ls -1 worker_data/*.pkl 2>/dev/null | wc -l)"; '
-           f'echo "GM=$(ls -1 game_data/*.pkl 2>/dev/null | wc -l)"; '
-           f'rm -f {rb}; tar czf {rb} worker_data game_data 2>/dev/null; '
-           f'stat -c "%s" {rb}')
-    print('\n[1/4] 远端打包…')
+    only = [x.strip() for x in a.iters.split(',') if x.strip().isdigit()]
+    if only:
+        # 只打指定代的文件：路径要显式列出，tar 才能只收这些
+        pats = ' '.join(f'worker_data/iter{i}_*.pkl game_data/iter{i}_*.pkl' for i in only)
+        cmd = (f'cd {remote_dir} || exit 1; '
+               f'echo "WK=$(ls -1 {pats} 2>/dev/null | wc -l)"; '
+               f'echo "GM=0"; '
+               f'rm -f {rb}; tar czf {rb} {pats} 2>/dev/null; '
+               f'stat -c "%s" {rb}')
+        print(f'\n[1/4] 远端打包（仅代 {",".join(only)}）…')
+    else:
+        cmd = (f'cd {remote_dir} || exit 1; '
+               f'echo "WK=$(ls -1 worker_data/*.pkl 2>/dev/null | wc -l)"; '
+               f'echo "GM=$(ls -1 game_data/*.pkl 2>/dev/null | wc -l)"; '
+               f'rm -f {rb}; tar czf {rb} worker_data game_data 2>/dev/null; '
+               f'stat -c "%s" {rb}')
+        print('\n[1/4] 远端打包…')
     rc, out = ssh(c, cmd)
     if rc != 0:
         sys.exit(f'✗ 远端打包失败 rc={rc}\n{out[-800:]}')

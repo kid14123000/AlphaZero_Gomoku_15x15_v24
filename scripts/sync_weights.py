@@ -96,6 +96,7 @@ def main():
     ap.add_argument('--version', default=None)
     ap.add_argument('--last', type=int, default=0, help='只拉最新 N 代')
     ap.add_argument('--min-iter', type=int, default=0)
+    ap.add_argument('--iters', default='', help='只拉指定代，逗号分隔（如 103,135,143）')
     ap.add_argument('--dry', action='store_true')
     a = ap.parse_args()
 
@@ -129,6 +130,13 @@ def main():
         todo = [n for n in todo if iter_of(n) >= a.min_iter]
     if a.last:
         todo = todo[-a.last:]
+    only = [x.strip() for x in a.iters.split(',') if x.strip().isdigit()]
+    if only:
+        want = {int(x) for x in only}
+        todo = [n for n in names if n not in have and iter_of(n) in want]
+        miss = sorted(want - {iter_of(n) for n in names})
+        if miss:
+            print(f'⚠ 服务器上没有 it{miss}')
 
     print(f'服务器 {len(names)} 个（it{iter_of(names[0])}~it{iter_of(names[-1])}），本地完整 {len(have)} 个')
     print(f'待拉 {len(todo)} 个 · 约 {len(todo)*10} MB')

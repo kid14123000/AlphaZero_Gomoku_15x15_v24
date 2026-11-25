@@ -132,6 +132,16 @@ OPEN_VTH_STEP = float(os.environ.get('GOMOKU_OPEN_VTH_STEP', '0.02'))
 OPEN_TRIALS = int(os.environ.get('GOMOKU_OPEN_TRIALS', '12'))
 OPEN_MAX = int(os.environ.get('GOMOKU_OPEN_MAX', '15'))
 
+# ── v24d: 第 N 手强制均衡（默认关）──
+# 动机：实测第 3 手 |V| 已达 0.83、75% 的对局 3 手内定胜负（演进史 2026-11-22）
+# 做法：走到第 BAL3_STEP 手时，枚举所有合法手，选「落子后 |V| 最小」的一手；
+#       若最优手仍 > BAL3_VTH（严格均衡），直接放弃本局（宁可不要这局）
+BAL3 = int(os.environ.get('GOMOKU_BAL3', '0'))
+BAL3_STEP = int(os.environ.get('GOMOKU_BAL3_STEP', '2'))  # step 0 起：2 = 要放第3子（下完3子后评估均衡）
+BAL3_VTH = float(os.environ.get('GOMOKU_BAL3_VTH', '0.35'))
+BAL3_TRIES = int(os.environ.get('GOMOKU_BAL3_TRIES', '3'))
+BAL3_TOPK = int(os.environ.get('GOMOKU_BAL3_TOPK', '20'))  # 只在 policy 前 K 手里挑均衡着
+
 # ─────────────────────────────────────────────
 # 网络（与 v1 相同）
 # ─────────────────────────────────────────────
@@ -660,10 +670,16 @@ def _gen_filtered_opening(env, agent):
             w = w / w.sum()
             r, cc = empty[np.random.choice(len(empty), p=w)]
             canon = player * board
-            p, _ = agent.predict_inference(canon[None], None, None)
-            p = np.asarray(p).reshape(n, n) * (board == 0)
-            tot = p.sum()
-            prob = p / tot if tot > 0 else (board == 0) / float((board == 0).sum())
+            _lg, _ = agent.predict_inference(canon[None], None, None)
+            # ⚠️ 修复 2026-11-22: predict_inference 返回的是 logits，旧代码当概率用
+            # logits 全负 ⇒ tot<0 ⇒ 永远回退"空点均匀分布"
+            # ⇒ 开局 0~15 手的训练标签一直是均匀（实测熵 7.81 bit = log2(225)）
+            _lg = np.asarray(_lg).reshape(n, n).astype(np.float64)
+            _lg = np.where(board == 0, _lg, -1e9)
+            _lg = _lg - _lg.max()
+            _pr = np.exp(_lg)
+            _s = _pr.sum()
+            prob = _pr / _s if _s > 0 else (board == 0) / float((board == 0).sum())
             prefix.append((player, board.copy(), prob))
             obs, _r, term, trunc, _i = env.step((int(r), int(cc)))
             last_xy = (int(r), int(cc))
@@ -687,6 +703,66 @@ def _gen_filtered_opening(env, agent):
     agent.reset_mcts()
     obs, _ = env.reset()
     return [], obs, None
+
+
+def _balanced_move(agent, board, player, last_move, vth, topk=20):
+    """v24d: 在 policy 前 topk 手里，选「落子后 |V| ≤ vth」的均衡手。
+
+    返回 (action, info)：
+      action = (r, c) 若存在均衡候选；否则 None（严格均衡不达标，放弃本局）
+      info   = dict(best=最优|V|, n_cand=候选数, n_ok=通过数)
+    采样方式：在均衡候选里按 policy 概率采样（不是纯 argmin，保留多样性）
+    """
+    n = board.shape[0]
+    empty = np.argwhere(board == 0)
+    info = {"best": 1.0, "n_cand": 0, "n_ok": 0}
+    if len(empty) == 0:
+        return None, info
+
+    # ① 先算一次 policy，取 topk 合法手
+    canon = (board * player)[None].astype(np.float32)
+    p, _ = agent.predict_inference(canon, [last_move if last_move is not None else (0, 0)], None)
+    # ⚠️ predict_inference 返回的是 logits（不是概率），必须自己 softmax
+    lg = np.asarray(p).reshape(n, n).astype(np.float64)
+    lg = np.where(board == 0, lg, -1e9)
+    lg = lg - lg.max()
+    pr2 = np.exp(lg)
+    pr2 = pr2 / pr2.sum()
+    flat = pr2.reshape(-1)
+    k = min(max(1, topk), int((flat > 0).sum()))
+    idx = np.argpartition(-flat, k - 1)[:k] if k < flat.size else np.arange(flat.size)
+    idx = idx[flat[idx] > 0]
+    if len(idx) == 0:
+        return None, info
+    cand_xy = [(int(i // n), int(i % n)) for i in idx]
+    probs = flat[idx].astype(np.float64)
+    probs = probs / probs.sum()
+    info["n_cand"] = len(cand_xy)
+
+    # ② 每个候选落子后算 |V|（对手视角，|V| 与视角无关）
+    cands = []
+    for (r, c) in cand_xy:
+        b2 = board.copy()
+        b2[r, c] = player
+        cands.append(b2 * (-player))
+    cands = np.asarray(cands, dtype=np.float32)
+    vals = []
+    for i in range(0, len(cands), 256):
+        _p, v = agent.predict_inference(
+            cands[i:i + 256], cand_xy[i:i + 256], None)
+        vals.append(np.asarray(v).reshape(-1))
+    V = np.abs(np.concatenate(vals))
+    info["best"] = float(V.min())
+
+    # ③ 只在均衡候选里，按 policy 概率采样
+    ok = np.where(V <= vth)[0]
+    info["n_ok"] = int(len(ok))
+    if len(ok) == 0:
+        return None, info
+    w = probs[ok]
+    w = w / w.sum() if w.sum() > 0 else np.ones(len(ok)) / len(ok)
+    j = int(np.random.choice(len(ok), p=w))
+    return cand_xy[int(ok[j])], info
 
 
 def self_play(env, agent, return_trajectory=False, verbose=False,
@@ -723,10 +799,20 @@ def self_play(env, agent, return_trajectory=False, verbose=False,
             # 白棋斜防守 π~30% 被 temp=1 采样压制(落地率仅30%), 信号被稀释;
             # 突变 1e-3 又让中盘过早贪心。指数衰减: 开局保留探索, 中盘渐锐。
             # step: 4→1.00  8→0.61  12→0.37  16→0.22  20→0.14  25→0.07  30→0.05
-            if step < 4:
-                temp = 1.0
+            # 2026-11-25 用户拍板: 0.5 -> 0.3 -> 0.2 -> 快速衰减到 0.01
+            # 理由: 开局 temp=1.0 时实落招平均排第 17~25 名(概率 13~18%)，等于随机；
+            #       短路 44~52%、边角 23% 与此同源。
+            if step == 0:
+                temp = 0.5
+            elif step == 1:
+                temp = 0.3
+            elif step == 2:
+                temp = 0.2
             else:
-                temp = max(0.05, math.exp(-(step - 4) / 8.0))
+                # 2026-11-25 二改: 平台 0.01 -> 0.15 (对齐 v36 的 0.15 平台)
+                # 理由: 0.01 时黑方威胁 3.5->10.0/百手(+186%) 而白方只 +63% => 白胜 43%->27%;
+                #       v36 注释: 留 0.15 弹性 = 保留"攻方偶尔一手非最优"的白方翻盘窗口
+                temp = max(0.15, 0.2 * math.exp(-(step - 2) / 1.7))
 
         # ── v2: 开局中心约束（前3手） ──
         fc = force_center and step < 3
@@ -734,6 +820,20 @@ def self_play(env, agent, return_trajectory=False, verbose=False,
         action, prob = agent.decide(observation, return_prob=True,
                                     temperature=temp, force_center=fc,
                                     move_no=step, last_move=last_move)
+
+        # ── v24d: 第 BAL3_STEP 手强制均衡（严格：不均衡就放弃本局）──
+        if BAL3 and step == BAL3_STEP:
+            _act, _info = _balanced_move(agent, board, player, last_move,
+                                         BAL3_VTH, BAL3_TOPK)
+            if _act is None:
+                if verbose:
+                    logging.info('第 %d 手 top%d 内无均衡着（最优 |V|=%.3f > %.2f），放弃本局',
+                                 step, BAL3_TOPK, _info["best"], BAL3_VTH)
+                return None
+            action = _act
+            if verbose:
+                logging.info('第 %d 手均衡着 %s（候选%d 通过%d 最优|V|=%.3f）',
+                             step, action, _info["n_cand"], _info["n_ok"], _info["best"])
         if verbose:
             logging.info('第 {} 步：玩家 {}, 动作 {}, temp={:.2f}'.format(
                 step, player, action, temp))
@@ -1306,9 +1406,19 @@ def train(config=None):
 
         # ── 主进程自对弈 ──
         for episode in range(completed, train_episodes_per_iteration):
-            df_trajectory = self_play(env, agent,
-                                      return_trajectory=True, verbose=False,
-                                      force_center=force_center)
+            df_trajectory = None
+            for _try in range(BAL3_TRIES if BAL3 else 1):
+                df_trajectory = self_play(env, agent,
+                                          return_trajectory=True, verbose=False,
+                                          force_center=force_center)
+                if df_trajectory is not None:
+                    break
+                logging.info('代{} 局{}/{} 第{}次不满足均衡，重开'.format(
+                    iteration, episode + 1, train_episodes_per_iteration, _try + 1))
+            if df_trajectory is None:
+                logging.warning('代{} 局{}/{} 连续{}次不满足均衡，跳过本局'.format(
+                    iteration, episode + 1, train_episodes_per_iteration, BAL3_TRIES))
+                continue
             winner = df_trajectory['winner'].iloc[0]
             winner_str = '黑胜' if winner == 1 else '白胜' if winner == -1 else '平局'
             elapsed = time.time() - iter_start
@@ -1331,14 +1441,28 @@ def train(config=None):
         os.makedirs(WORKER_DIR, exist_ok=True)
         worker_game_pattern = os.path.join(
             WORKER_DIR, 'iter{}_*_game_*.pkl'.format(iteration))
-        expected = config.get('worker_count', 9) * config.get('worker_games_per_worker', 10)
+        # ── v2: 动态领局（GOMOKU_DYNAMIC=1 时启用）──
+        # 固定分配模式下 expected = 工兵数×每兵局数；动态模式只看总目标局数
+        _dynamic = int(os.environ.get('GOMOKU_DYNAMIC', '0'))
+        if _dynamic:
+            expected = int(os.environ.get('GOMOKU_TOTAL_GAMES', '95'))
+        else:
+            expected = config.get('worker_count', 9) * config.get('worker_games_per_worker', 10)
         # v2 fix: 首次迭代无已存权重时跳过等待工兵（工兵需 weights.pt 才能启动）
         if os.path.exists(WEIGHTS_PATH):
+            _stopf = os.path.join(WORKER_DIR, 'stop_iter{}'.format(iteration))
+            if _dynamic and os.path.exists(_stopf):
+                os.remove(_stopf)          # 清掉上一代残留，避免工兵立刻退出
             while True:
                 done = sorted(glob.glob(worker_game_pattern))
                 if len(done) >= expected:
+                    if _dynamic:
+                        with open(_stopf, 'w') as _f:
+                            _f.write('stop')
+                        time.sleep(3)      # 给正在跑的工兵收尾
                     break
-                logging.info('等待工兵: {}/{}局已到'.format(len(done), expected))
+                logging.info('等待工兵: {}/{}局已到{}'.format(
+                    len(done), expected, ' [动态]' if _dynamic else ''))
                 time.sleep(10)
         else:
             logging.info('首次迭代：无已存权重，跳过等待工兵，仅用主进程数据')

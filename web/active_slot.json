@@ -1,10 +1,10 @@
 {
-  "slot": "v24b",
+  "slot": "v24d",
   "round": null,
-  "compare": "v24",
-  "goal": 0.30,
-  "coach_note": "v24b 纯自对弈, 无教练 (黑方空盘首手走 |value| 最小的均衡手)",
-  "student_note": "v24b = v24 原版 + 均衡首手; 四平面 INPUT_CHANNELS=4, ch2 恒 1",
+  "compare": "v24b",
+  "goal": 0.3,
+  "coach_note": "v24d 纯自对弈, 无教练 (BAL3 强制均衡: TOPK20/VTH0.35/STEP=2 ⇒ 全局第3手=黑第2手)",
+  "student_note": "v24d = v24c + BAL3; 路径与 v24b/v24c 相同 (gomoku_checkpoints_v24 / 权重后缀 _v24), 从 it0 重训; 四平面 ch2 恒 1",
   "infer_log": "",
-  "updated": "2026-11-15 16:45:00"
+  "updated": "2026-11-23 22:35:00"
 }

@@ -24,7 +24,7 @@ except Exception:
     _active_cfg = None
     _SLOT_META = {}
     DEFAULT_VERSION = 'v39'
-KNOWN_VERSIONS = ['v24b', 'v24', 'v42', 'v41', 'v40', 'v39', 'v39r6', 'v39r3', 'v39r1',
+KNOWN_VERSIONS = ['v24d', 'v24b', 'v24', 'v42', 'v41', 'v40', 'v39', 'v39r6', 'v39r3', 'v39r1',
                   'v38', 'v38r4', 'v38r2', 'v38r1', 'v37', 'v36', 'v29', 'v26']
 
 

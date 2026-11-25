@@ -18,3 +18,12 @@ gomoku_checkpoints_v24/replay_pool_index.json
 gomoku_checkpoints_*/worker_data/
 gomoku_checkpoints_*/game_data/
 gomoku_checkpoints_*/replay_pool_index.json
+probe_planes_out.json
+web/k10_trend.json
+web/k10_trend.png
+web/probe_planes_out.json
+web/k10_recent.png
+gomoku_checkpoints_v24_v24c_run1/
+gomoku_checkpoints_*_run*/
+web/positions.json.bak
+web/positions.json.before_lab

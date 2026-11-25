@@ -67,13 +67,28 @@ SLOT_META = {
              'main_log': 'train_v24b.log',
              'worker_log_fmt': 'worker_v24_{i}.log',
              'note': 'v24b = v24 + 均衡首手(中心5x5 / |value|最小前3随机); 纯自对弈无教练; 30%=白方失衡线(下限)'},
+    # ★ 2026-11-22: v24d = v24c + BAL3（第 N 手强制「均衡手」，修了几个 bug 后重训）
+    #   🚨 路径与 v24b/v24c 完全相同 —— 训练脚本里 VERSION 仍是 "v24"、目录仍是
+    #      gomoku_checkpoints_v24、日志仍是 train_v24b.log、工兵日志 worker_v24_{i}.log。
+    #      变体只是环境变量：BAL3=1 / BAL3_TOPK=20 / BAL3_VTH=0.35 / BAL3_STEP=3 / BAL3_TRIES=3，
+    #      且 BALANCED_FIRST=0、OPEN_FILTER=0（v24b/v24c 的机制都关了）。
+    #      所以这个槽【只换显示名与工兵数，不换任何路径】；真实变体由主日志启动横幅判定。
+    'v24d': {'student_color': -1, 'student_name': '白', 'coach_name': '', 'coach_color': None,
+             'goal': 0.30, 'infer_log': '', 'workers': 15,
+             'remote_root': '/root/workspace/run_v24b',
+             'ckpt_basename': 'gomoku_checkpoints_v24',
+             'weight_suffix': 'v24',
+             'main_log': 'train_v24b.log',
+             'worker_log_fmt': 'worker_v24_{i}.log',
+             'note': 'v24d = v24c + BAL3 强制均衡(TOPK20/VTH0.35/STEP=2 ⇒ 全局第3手); 纯自对弈无教练; '
+                     '从 it0 重训(旧 v24c run 已归档 /root/autodl-tmp/archive/v24c_run1_final_1122)'},
 }
 
 
 def _other_slot(slot):
     """loss 曲线/胜率的【对比线】版本 —— v40 是全新单通道线, 用 v39 当形状参照"""
     return {'v39': 'v38', 'v38': 'v39', 'v40': 'v39', 'v41': 'v40', 'v42': 'v41',
-            'v24b': 'v24'}.get(slot, 'v39')
+            'v24b': 'v24', 'v24d': 'v24b'}.get(slot, 'v39')
 
 
 def load_raw():

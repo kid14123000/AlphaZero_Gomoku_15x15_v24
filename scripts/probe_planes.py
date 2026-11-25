@@ -18,7 +18,7 @@ import traceback
 
 import numpy as np
 
-WEB = os.path.dirname(os.path.abspath(__file__))
+WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'web')
 sys.path.insert(0, WEB)
 
 WV = 'v24b'
@@ -162,7 +162,7 @@ def main():
          'sim_count': 20})
     run('对弈play', '/api/play', {'r': 7, 'c': 7})
 
-    json.dump(probes, open(os.path.join(WEB, 'probe_planes_out.json'), 'w'),
+    json.dump(probes, open(os.path.join(WEB, "probe_planes_out.json"), 'w'),
               ensure_ascii=False, indent=1, default=str)
 
     print('\n' + '=' * 112)

@@ -295,8 +295,11 @@ function update(d){
   const bw=d.bw_current||{};
   const bwT=(bw.black||0)+(bw.white||0);
   const _sn=(d.kpi||{}).student_name||'白';            // 学生执色 (v38 第二轮=白, v39=黑)
+  // ★ 2026-11-23: 无教练版(v24 系列)没有「学生」这个概念，原来会写成「学生(白)胜率」✗
+  const _coachless = !!((d.coach||{}).coachless);
+  const _wrLbl = _coachless ? '白胜率' : `学生(${_sn})胜率`;
   document.getElementById('bwStat').textContent = bwT
-    ? `黑 ${bw.black} : 白 ${bw.white}（在产代共 ${bwT} 局 · 学生(${_sn})胜率 `
+    ? `黑 ${bw.black} : 白 ${bw.white}（在产代 ${d.worker_active_iter ?? d.current_it} 共 ${bwT} 局 · ${_wrLbl} `
       + `${Math.round(((_sn==='白'?bw.white:bw.black)||0)/bwT*100)}%）`
     : '—（工兵日志窗口内无对局记录）';
 
@@ -306,7 +309,9 @@ function update(d){
   //   工兵数: 用后端 worker_cells = max(配置值, 实际拉到的工兵段) —— v42 配置 10 但实跑 20+ ✗
   //   每工兵目标: 用 metadata.worker_games_per_worker 真值 (v42=11), 不再用均摊估算 ✗
   unitSub.textContent=`主进程(调度+训练, 本代 ${mainGames} 局) + ${d.worker_cells||wc} 工兵`
-    + ` · 每工兵目标 ${d.worker_games_per_worker||'?'} 局 (每代 ${target} 局)`;
+    + ` · 每工兵配额 ${d.worker_games_per_worker||'?'} 局 (本代目标 ${target} 局`
+    + (((d.worker_cells||wc)*(d.worker_games_per_worker||0) > target) ? ' · 动态凑满就收' : '')
+    + ')';
 
   const exp=document.getElementById('lastUpd');
   exp.textContent=`${d.time||''} · ${d.checkpoints?.length||0}个权重 · ${d.experiences?.length||0}代经验`
@@ -396,8 +401,13 @@ function update(d){
       hEl.innerHTML=`空盘 <b style="color:${emCol}">${em!=null?(em>0?'+':'')+em:'—'}</b>`+
         `<span style="color:#64748b">(健康<0.15)</span>`+
         (dsc!=null?` · 判别度 <b style="color:${dCol}">${dsc}</b><span style="color:#64748b">(红线<0.15)</span>`:'')+
-        `<br>白1距黑1 <b style="color:${col}">${w1!=null?w1:'—'}</b> 格`+
-        `<span style="color:#64748b">（基线14 / 目标≤4）</span>`+
+        // ★ 2026-11-23: w1（白1距黑1 中位）只有 v38/v42 那套 health_log 才写；
+        //   v24 系列根本没有这一列 ⇒ 原来会显示「— 格（基线14 / 目标≤4）」，
+        //   像是「指标异常/没采到」，其实是【本版不采集】。分开写。
+        (w1!=null
+          ? `<br>白1距黑1 <b style="color:${col}">${w1}</b> 格`+
+            `<span style="color:#64748b">（基线14 / 目标≤4）</span>`
+          : `<br><span style="color:#475569">白1距黑1：本版不采集（v38/v42 才写这一列）</span>`)+
         (last.act!=null?` · 激活率 ${last.act}%`:'')+
         `<span style="color:#64748b"> · 空盘近${hl.length}代 ${emTrend}</span>`;
     }
