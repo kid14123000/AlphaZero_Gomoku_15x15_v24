@@ -35,9 +35,15 @@ export GAMES_PER_WORKER=10                              # 仅用于日志显示
 # ── 第3手强制均衡（v24d 核心）──
 export GOMOKU_BAL3=1
 export GOMOKU_BAL3_STEP=2        # ★ 2 = 第 3 手（step 0 基），别写成 3
-export GOMOKU_BAL3_TOPK=50       # 只在 policy 前 50 手里挑（2026-11-24 由 20 调大：top20 通过率已跌到 2.5%）
+export GOMOKU_BAL3_TOPK=30       # 只在 policy 前 30 手里挑（2026-11-26 由 50 调回 30：收窄候选、抑制开局外漂）
 export GOMOKU_BAL3_VTH=0.35      # 下完3子 |V|≤0.35 才算均衡
 export GOMOKU_BAL3_TRIES=3       # 不达标最多重开 3 次
+
+# ── value 软标签（Q 标签，2026-11-27 用户拍板开启）──
+# v33(09-05) 引入、v34/v35/v36 一路继承；标签 = 根节点期望值 V-hat = sum(pi*Q)
+# 预期：top3/名次（value 质量）先改善；白方不受影响（历史已证软标签不治白）
+export GOMOKU_VALUE_QA=1
+export GOMOKU_QA_LAMBDA=0.4    # vs = 0.4*qa + 0.6*z（0.6 用真值 z 锚住，防自举放大）
 
 # ── 开局 ──
 export GOMOKU_OPEN_FILTER=0      # 关掉旧的"随机开局"，由 BAL3 接管
@@ -53,6 +59,8 @@ echo "动态领局      : ON（总目标 $GOMOKU_TOTAL_GAMES 局，单兵上限 
 echo "第3手均衡     : ON（STEP=$GOMOKU_BAL3_STEP ← 0基，2=第3手 ｜ TOPK=$GOMOKU_BAL3_TOPK ｜ VTH=$GOMOKU_BAL3_VTH ｜ TRIES=$GOMOKU_BAL3_TRIES）"
 echo "随机开局过滤  : OFF（OPEN_FILTER=0）"
 echo "均衡首手      : OFF（BALANCED_FIRST=0）"
+echo "value 软标签  : ON（V^=sum(pi*Q)，NaN 行回退 z）"
+echo "λ 混合系数    : $GOMOKU_QA_LAMBDA（vs = λ*qa + (1-λ)*z）"
 echo "代码版本      : $(md5sum Gomoku-v0_pt_v24b.py | cut -c1-8) / $(md5sum Gomoku-worker_v24.py | cut -c1-8)"
 echo "════════════════════════════════"
 

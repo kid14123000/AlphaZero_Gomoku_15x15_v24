@@ -27,3 +27,6 @@ gomoku_checkpoints_v24_v24c_run1/
 gomoku_checkpoints_*_run*/
 web/positions.json.bak
 web/positions.json.before_lab
+
+# macOS
+.DS_Store

@@ -142,6 +142,20 @@ BAL3_VTH = float(os.environ.get('GOMOKU_BAL3_VTH', '0.35'))
 BAL3_TRIES = int(os.environ.get('GOMOKU_BAL3_TRIES', '3'))
 BAL3_TOPK = int(os.environ.get('GOMOKU_BAL3_TOPK', '20'))  # 只在 policy 前 K 手里挑均衡着
 
+# ── v24e: value 软标签（Q 标签，默认关）──
+# 历史：v33(2026-09-05) 引入 search_q，v34/v35/v36 一路继承（v36 config 写死 value_target='search_q'）。
+# 动机：value head 输入是【局面 s】不含动作 a。用终局 z 当标签 ⇒ 输局里的好步也吃 -1、
+#       赢局里的坏步也吃 +1 ⇒ 信用分配噪声大（v33 记录：±1 标签 15 epoch 就把空盘冲到 +0.40）。
+# 做法：标签 = 根节点期望值 V̂ = Σπ(a)·Q(s,a)（MCTS 现成 count/q，不需重搜）。
+#       为什么不直接用 Q(s,a_t)：我们温度 0.15 是采样、BAL3 还会覆盖第 3 手，
+#       被选中那手可能只访问几次甚至 count=0 ⇒ point 标签噪声大。
+#       v36 2026-09-14 的注释同结论：「架构-目标是 V(s) 不是 Q(s,a)，用 Q(s,a_t) 存在失配」。
+# 兜底：随机开局前缀 / count=0 ⇒ qa=NaN ⇒ 学习时该行回退到 z。
+VALUE_QA = int(os.environ.get('GOMOKU_VALUE_QA', '0'))
+# λ 混合系数：vs = λ·qa + (1−λ)·z。λ=1 = 纯软标签（会自举放大，空盘 V 0.22→0.75）；
+# λ=0.4 = 用户 2026-11-28 拍板值（v33 记录的经验区间 .3~.5），用 z 锚住真值。
+VALUE_QA_LAMBDA = float(os.environ.get('GOMOKU_QA_LAMBDA', '0.4'))
+
 # ─────────────────────────────────────────────
 # 网络（与 v1 相同）
 # ─────────────────────────────────────────────
@@ -381,6 +395,21 @@ class AlphaZeroAgent:
         prob[loc] = 1.0
         return loc, prob
 
+    def value_hat(self, observation):
+        """v24e: 根节点期望值 V̂ = Σπ(a)·Q(s,a)，作 value 软标签。
+
+        返回 NaN 表示该局面没有搜索统计（随机开局前缀 / 未搜索 / count=0）
+        ⇒ 学习时该行回退到终局 z。视角与 q[s] 一致（都是"当前该走的一方"视角）。
+        """
+        board, player = observation
+        s = (player * board).tobytes()
+        if s not in self.count or s not in self.q:
+            return float('nan')
+        tot = float(self.count[s].sum())
+        if tot <= 0:
+            return float('nan')
+        return float(((self.count[s] / tot) * self.q[s]).sum())
+
     def decide(self, observation, greedy=False, return_prob=False, noise=True,
                temperature=1.0, force_center=False, move_no=0, last_move=None):
         """v2: 支持 temperature 采样 + 开局中心约束
@@ -506,7 +535,15 @@ class AlphaZeroAgent:
             )
             last_moves = df.loc[indices, 'last_move'].values
             canonical_boards = players[:, np.newaxis, np.newaxis] * boards
-            vs = (players * winners)[:, np.newaxis].astype(np.float32)   # v24b-fix: 整型 → Float, 否则 MSE 得 Long target, backward 报 dtype
+            if VALUE_QA and 'qa' in df.columns:
+                # v24e: value 软标签 = 根节点期望值 V̂；NaN（随机开局/BAL3覆盖/count=0）逐行回退 z
+                qa = np.stack(df.loc[indices, 'qa']).astype(np.float32)
+                vz = (players * winners).astype(np.float32)
+                mixed = VALUE_QA_LAMBDA * qa + (1.0 - VALUE_QA_LAMBDA) * vz
+                # NaN（随机开局/BAL3覆盖/count=0）整行回退到纯 z
+                vs = np.where(np.isnan(qa), vz, mixed)[:, np.newaxis].astype(np.float32)
+            else:
+                vs = (players * winners)[:, np.newaxis].astype(np.float32)   # v24b-fix: 整型 → Float, 否则 MSE 得 Long target, backward 报 dtype
 
             # v8: 1ch canonical (N,15,15) → 4-plane input (N,4,15,15)
             inp = np.zeros((len(players), INPUT_CHANNELS) + boards.shape[1:],
@@ -842,12 +879,14 @@ def self_play(env, agent, return_trajectory=False, verbose=False,
         winner = env.get_winner(observation)
         done = terminated or truncated
         if return_trajectory:
-            trajectory.append((player, board, prob))
+            # v24e: 记【落子前】局面的根期望值作 value 软标签（board/player 是本轮开头的旧值）
+            qa = agent.value_hat((board, player)) if VALUE_QA else float('nan')
+            trajectory.append((player, board, prob, qa))
         if done:
             break
     if return_trajectory:
         df_trajectory = pd.DataFrame(trajectory,
-                                     columns=['player', 'board', 'prob'])
+                                     columns=['player', 'board', 'prob', 'qa'])
         df_trajectory['winner'] = winner
         return df_trajectory
     else:

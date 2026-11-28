@@ -16,6 +16,7 @@ cfg = {
     "batches": 32,
     "batch_size": 512,
     "sim_count": int(os.environ.get("SIMS", "800")),
+    "value_qa": int(os.environ.get("GOMOKU_VALUE_QA", "0")),
     "net_kwargs": {
         "conv_filters": [128],
         "residual_filters": [[128, 128]] * 8,
